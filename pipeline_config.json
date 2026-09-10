@@ -1,0 +1,24 @@
+{
+  "plate_size": [
+    256,
+    96
+  ],
+  "quality_weights": {
+    "blur": 0.3,
+    "exposure": 0.15,
+    "noise": 0.15,
+    "resolution": 0.2,
+    "perspective": 0.1,
+    "occlusion": 0.1
+  },
+  "score_weights": {
+    "ocr": 0.3,
+    "agreement": 0.2,
+    "stability": 0.2,
+    "quality": 0.15,
+    "geometry": 0.15
+  },
+  "char_threshold": 0.35,
+  "score_threshold": 0.25,
+  "detector_trained": true
+}
