@@ -1,8 +1,6 @@
 import os
 import json
-import html
-import itertools
-from io import BytesIO
+import tempfile
 
 import cv2
 import numpy as np
@@ -11,7 +9,7 @@ import streamlit as st
 from PIL import Image
 
 try:
-    import pillow_avif  # noqa: F401
+    import pillow_avif  # noqa: F401, adds AVIF support to Pillow
 except Exception:
     pass
 
@@ -21,7 +19,7 @@ try:
 except Exception as e:
     RapidOCR = None
     RAPIDOCR_AVAILABLE = False
-    print(f"RapidOCR unavailable: {e}")
+    print(f"RapidOCR unavailable, tesseract only: {e}")
 
 from ultralytics import YOLO
 
@@ -31,118 +29,34 @@ CONFIG_PATH = os.path.join(BASE_DIR, "pipeline_config.json")
 
 DEFAULT_CONFIG = {
     "plate_size": [256, 96],
-    "quality_weights": {"blur": 0.3, "exposure": 0.15, "noise": 0.15, "resolution": 0.2, "perspective": 0.1, "occlusion": 0.1},
-    "score_weights": {"ocr": 0.3, "agreement": 0.2, "stability": 0.2, "quality": 0.15, "geometry": 0.15},
+    "quality_weights": {"blur": 0.30, "exposure": 0.15, "noise": 0.15,
+                         "resolution": 0.20, "perspective": 0.10, "occlusion": 0.10},
+    "score_weights": {"ocr": 0.30, "agreement": 0.20, "stability": 0.20,
+                       "quality": 0.15, "geometry": 0.15},
     "char_threshold": 0.35,
     "score_threshold": 0.25,
-    "detector_trained": True,
 }
 
 try:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        CONFIG = json.load(f)
+        CONFIG = {**DEFAULT_CONFIG, **json.load(f)}
 except Exception:
     CONFIG = DEFAULT_CONFIG
 
 PLATE_SIZE = tuple(CONFIG.get("plate_size", [256, 96]))
 QUALITY_WEIGHTS = CONFIG.get("quality_weights", DEFAULT_CONFIG["quality_weights"])
 SCORE_WEIGHTS = CONFIG.get("score_weights", DEFAULT_CONFIG["score_weights"])
+CHAR_THRESHOLD = CONFIG.get("char_threshold", 0.35)
+SCORE_THRESHOLD = CONFIG.get("score_threshold", 0.25)
 
+CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+SIMILAR = {"O": ["0"], "0": ["O"], "I": ["1"], "1": ["I"], "B": ["8"], "8": ["B"],
+           "S": ["5"], "5": ["S"], "Z": ["2"], "2": ["Z"], "G": ["6"], "6": ["G"]}
 INDIAN_STATE_CODES = {
-    "AP", "AR", "AS", "BR", "CG", "CH", "DD", "DL", "DN", "GA", "GJ", "HR", "HP", "JH", "JK", "KA", "KL", "LA", "LD", "MH",
-    "ML", "MN", "MP", "MZ", "NL", "OD", "PB", "PY", "RJ", "SK", "TN", "TR", "TS", "UK", "UP", "WB"
+    "AP", "AR", "AS", "BR", "CG", "CH", "DD", "DL", "DN", "GA", "GJ", "HR", "HP",
+    "JH", "JK", "KA", "KL", "LA", "LD", "MH", "ML", "MN", "MP", "MZ", "NL", "OD",
+    "PB", "PY", "RJ", "SK", "TN", "TR", "TS", "UK", "UP", "WB",
 }
-
-LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-DIGITS = "0123456789"
-
-
-# Common OCR confusions for the two-letter Indian state prefix.
-# These are used only to rank a *valid* state code; they never alter
-# the district/series/registration number.
-STATE_PREFIX_CONFUSIONS = {
-    "M": {"H": 0.72, "N": 0.82, "W": 0.88},
-    "H": {"M": 0.72, "N": 0.82, "R": 0.86, "P": 0.88},
-    "A": {"R": 0.80, "4": 0.75},
-    "C": {"G": 0.78, "O": 0.82},
-    "G": {"C": 0.78, "O": 0.82, "Q": 0.84},
-    "P": {"R": 0.86, "B": 0.88},
-    "T": {"I": 0.82, "Y": 0.86},
-    "U": {"V": 0.82, "O": 0.86},
-    "D": {"O": 0.82, "B": 0.88},
-    "R": {"P": 0.86, "K": 0.88},
-}
-
-
-def state_prefix_candidates(prefix):
-    """Return plausible valid Indian state codes for a noisy OCR prefix."""
-    prefix = normalize_text(prefix)[:2]
-    if len(prefix) != 2:
-        return []
-    if prefix in INDIAN_STATE_CODES:
-        return [(prefix, 1.0)]
-
-    ranked = []
-    for code in INDIAN_STATE_CODES:
-        score = 1.0
-        for a, b in zip(prefix, code):
-            if a == b:
-                continue
-            # OCR confusion gets a smaller penalty than an arbitrary change.
-            confusion = STATE_PREFIX_CONFUSIONS.get(a, {}).get(b)
-            if confusion is None:
-                confusion = STATE_PREFIX_CONFUSIONS.get(b, {}).get(a)
-            score *= confusion if confusion is not None else 0.18
-        ranked.append((code, score))
-    ranked.sort(key=lambda x: x[1], reverse=True)
-    return ranked[:6]
-
-
-def repair_state_prefix(text, source_prefix=None):
-    """
-    Repair only an invalid two-letter state prefix when a valid Indian
-    state code is strongly supported by OCR. Everything after the prefix
-    is kept unchanged.
-    """
-    text = normalize_text(text)
-    if len(text) != 10 or text[:2] in INDIAN_STATE_CODES:
-        return text, 0.0
-
-    prefix = normalize_text(source_prefix or text[:2])[:2]
-    candidates = state_prefix_candidates(prefix)
-    if not candidates:
-        return text, 0.0
-
-    best_code, score = candidates[0]
-    second = candidates[1][1] if len(candidates) > 1 else 0.0
-
-    # Only repair when the best valid state code is clearly stronger.
-    # This avoids inventing state codes for arbitrary OCR garbage.
-    if score < 0.48 or score < second * 1.20:
-        return text, 0.0
-
-    return best_code + text[2:], score
-
-
-@st.cache_resource(show_spinner=False)
-def get_detector():
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Could not find {MODEL_PATH}")
-    return YOLO(MODEL_PATH)
-
-
-@st.cache_resource(show_spinner=False)
-def get_rapidocr():
-    if not RAPIDOCR_AVAILABLE:
-        return None
-    try:
-        return RapidOCR()
-    except Exception as e:
-        print(f"RapidOCR initialization failed: {e}")
-        return None
-
-
-detector = get_detector()
 
 
 def clamp(v, lo=0.0, hi=1.0):
@@ -153,76 +67,155 @@ def normalize_text(text):
     if text is None:
         return ""
     text = str(text).upper()
-    return "".join(c for c in text if c in LETTERS + DIGITS)
+    return "".join(c for c in text if c in CHARS)
 
 
-def blur_score(image):
-    if image is None or image.size == 0:
-        return 0.0
+# ---------------------------------------------------------------------------
+# model loading
+# ---------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner=False)
+def get_detector():
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"Could not find trained detector: {MODEL_PATH}")
+    return YOLO(MODEL_PATH)
+
+
+@st.cache_resource(show_spinner=False)
+def get_haar():
+    path = os.path.join(getattr(cv2.data, "haarcascades", ""), "haarcascade_russian_plate_number.xml")
+    if os.path.isfile(path) and hasattr(cv2, "CascadeClassifier"):
+        c = cv2.CascadeClassifier(path)
+        if not c.empty():
+            return c
+    return None
+
+
+@st.cache_resource(show_spinner=False)
+def get_rapidocr():
+    if not RAPIDOCR_AVAILABLE:
+        return None
+    try:
+        return RapidOCR()
+    except Exception as e:
+        print(f"RapidOCR init failed: {e}")
+        return None
+
+
+detector = get_detector()
+haar = get_haar()
+
+
+# ---------------------------------------------------------------------------
+# detection, with a fallback chain so a real vehicle photo almost never
+# comes back with nothing to work on, even when the trained detector
+# misses it (small, blurry or unusually angled plate)
+# ---------------------------------------------------------------------------
+
+def _contour_guess(image):
+    h, w = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.dilate(cv2.Canny(gray, 50, 150), np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    best, best_area = None, -1
+    for c in contours:
+        x, y, cw, ch = cv2.boundingRect(c)
+        if cw < 25 or ch < 10 or not (1.3 <= cw / ch <= 8.0):
+            continue
+        if cw * ch > best_area:
+            best_area, best = cw * ch, (x, y, x + cw, y + ch)
+    return best
+
+
+def detect_plate(image):
+    """Returns (crop, bbox, confidence, backend). Tries the trained YOLO
+    detector first (twice, the second time at a lower confidence and a
+    larger inference size, which is what actually finds a small or blurred
+    plate). Falls back to a classical Haar cascade, then a contour guess,
+    so a photo that clearly contains a vehicle is very rarely rejected
+    outright."""
+    h, w = image.shape[:2]
+
+    for conf, imgsz in ((0.25, 640), (0.10, 1280)):
+        try:
+            results = detector.predict(source=image, conf=conf, imgsz=imgsz, verbose=False)
+        except Exception as e:
+            print(f"detector error: {e}")
+            results = None
+        if results and results[0].boxes is not None and len(results[0].boxes) > 0:
+            boxes = results[0].boxes
+            confs = [float(b.conf[0].item()) for b in boxes]
+            i = int(np.argmax(confs))
+            x1, y1, x2, y2 = map(int, boxes[i].xyxy[0].cpu().numpy())
+            x1, y1 = max(0, min(x1, w - 1)), max(0, min(y1, h - 1))
+            x2, y2 = max(0, min(x2, w)), max(0, min(y2, h))
+            if x2 > x1 and y2 > y1:
+                return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2), confs[i], "yolo"
+
+    if haar is not None:
+        boxes = haar.detectMultiScale(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), 1.1, 4)
+        if len(boxes) > 0:
+            x, y, cw, ch = max(boxes, key=lambda b: b[2] * b[3])
+            x1, y1, x2, y2 = x, y, x + cw, y + ch
+            return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2), 0.35, "haar"
+
+    guess = _contour_guess(image)
+    if guess is not None:
+        x1, y1, x2, y2 = guess
+        return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2), 0.20, "contour"
+
+    return None, None, 0.0, "none"
+
+
+# ---------------------------------------------------------------------------
+# quality, rectification and cleanup
+# ---------------------------------------------------------------------------
+
+def check_quality(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    return clamp(cv2.Laplacian(gray, cv2.CV_64F).var() / 500.0)
+    h, w = gray.shape[:2]
 
-
-def exposure_score(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    return clamp(1.0 - abs(float(np.mean(gray)) - 127.5) / 127.5)
-
-
-def noise_score(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    blur = clamp(cv2.Laplacian(gray, cv2.CV_64F).var() / 500.0)
+    exposure = clamp(1.0 - abs(float(np.mean(gray)) - 127.5) / 127.5)
     residual = cv2.absdiff(gray, cv2.GaussianBlur(gray, (3, 3), 0))
-    return clamp(1.0 - float(np.mean(residual)) / 50.0)
+    noise = clamp(1.0 - float(np.mean(residual)) / 50.0)
+    resolution = clamp((w * h) / 15000.0)
+    ratio = w / float(h) if h else 0.0
+    if 2.0 <= ratio <= 5.5:
+        perspective = 1.0
+    elif 1.2 <= ratio < 2.0:
+        perspective = 0.7
+    elif ratio > 8.0:
+        perspective = 0.5
+    else:
+        perspective = 0.4
+    occlusion = clamp(float(np.std(gray)) / 80.0)
 
-
-def resolution_score(image):
-    h, w = image.shape[:2]
-    return clamp((w * h) / 15000.0)
-
-
-def perspective_score(image):
-    h, w = image.shape[:2]
-    if not h:
-        return 0.0
-    r = w / float(h)
-    if 2.0 <= r <= 5.5:
-        return 1.0
-    if 1.5 <= r < 2.0:
-        return 0.7
-    if r > 8.0:
-        return 0.5
-    return 0.4
-
-
-def occlusion_score(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    return clamp(float(np.std(gray)) / 80.0)
-
-
-def calculate_quality_score(plate):
-    scores = {
-        "blur": blur_score(plate), "exposure": exposure_score(plate), "noise": noise_score(plate),
-        "resolution": resolution_score(plate), "perspective": perspective_score(plate), "occlusion": occlusion_score(plate)
-    }
+    scores = {"blur": blur, "exposure": exposure, "noise": noise,
+              "resolution": resolution, "perspective": perspective, "occlusion": occlusion}
     total = sum(scores[k] * QUALITY_WEIGHTS.get(k, 0.0) for k in scores)
-    weights = sum(QUALITY_WEIGHTS.get(k, 0.0) for k in scores)
-    return (clamp(total / weights) if weights else 0.0), scores
+    weight_sum = sum(QUALITY_WEIGHTS.get(k, 0.0) for k in scores)
+    scores["combined"] = clamp(total / weight_sum) if weight_sum else 0.0
+    return scores
 
 
-def order_quad(points):
+def _order_quad(points):
     points = np.asarray(points, dtype=np.float32)
     s = points.sum(axis=1)
     d = np.diff(points, axis=1).reshape(-1)
-    return np.array([points[np.argmin(s)], points[np.argmin(d)], points[np.argmax(s)], points[np.argmax(d)]], dtype=np.float32)
+    return np.array([points[np.argmin(s)], points[np.argmin(d)],
+                      points[np.argmax(s)], points[np.argmax(d)]], dtype=np.float32)
 
 
-def find_plate_quad(plate):
+def _find_plate_quad(plate):
+    """Look for the plate's own rectangle inside the crop, so a skewed
+    photo still gets straightened instead of just resized."""
     gray = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY) if plate.ndim == 3 else plate.copy()
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 40, 140)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 40, 140)
     contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     h, w = gray.shape[:2]
     area_total = float(h * w)
-    best, best_score = None, -1
+    best, best_score = None, -1.0
     for c in contours:
         area = cv2.contourArea(c)
         if area < area_total * 0.18 or area > area_total * 0.98:
@@ -231,397 +224,512 @@ def find_plate_quad(plate):
         if peri <= 0:
             continue
         for eps in (0.02, 0.03, 0.04):
-            a = cv2.approxPolyDP(c, eps * peri, True)
-            if len(a) != 4:
+            approx = cv2.approxPolyDP(c, eps * peri, True)
+            if len(approx) != 4:
                 continue
-            q = order_quad(a.reshape(4, 2))
-            wt = np.linalg.norm(q[1] - q[0]); wb = np.linalg.norm(q[2] - q[3])
-            hl = np.linalg.norm(q[3] - q[0]); hr = np.linalg.norm(q[2] - q[1])
-            ww, hh = (wt + wb) / 2, (hl + hr) / 2
-            if hh <= 1 or ww <= 1:
+            q = _order_quad(approx.reshape(4, 2))
+            width = (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3])) / 2
+            height = (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1])) / 2
+            if height <= 1 or width <= 1:
                 continue
-            aspect = ww / hh
-            if not 2.0 <= aspect <= 8.0:
+            aspect = width / height
+            if not (1.2 <= aspect <= 8.0):
                 continue
-            rectangularity = area / max(ww * hh, 1.0)
+            rectangularity = area / max(width * height, 1.0)
             score = (area / area_total) * 0.65 + rectangularity * 0.35
             if score > best_score:
                 best_score, best = score, q
     return best
 
 
-def rectify_plate(plate):
+def rectify(plate):
     if plate is None or plate.size == 0:
         return None
     tw, th = PLATE_SIZE
-    quad = find_plate_quad(plate)
+    quad = _find_plate_quad(plate)
     if quad is not None:
         dst = np.array([[0, 0], [tw - 1, 0], [tw - 1, th - 1], [0, th - 1]], dtype=np.float32)
-        M = cv2.getPerspectiveTransform(quad, dst)
-        return cv2.warpPerspective(plate, M, (tw, th), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        matrix = cv2.getPerspectiveTransform(quad, dst)
+        return cv2.warpPerspective(plate, matrix, (tw, th), flags=cv2.INTER_CUBIC,
+                                    borderMode=cv2.BORDER_REPLICATE)
     padded = cv2.copyMakeBorder(plate, 8, 8, 12, 12, cv2.BORDER_REPLICATE)
     return cv2.resize(padded, (tw, th), interpolation=cv2.INTER_CUBIC)
 
 
-def ocr_variants(image):
-    """Small set of faithful variants; avoid aggressive thresholding on blur."""
+def ocr_variants(image, quality):
+    """A handful of different views of the same crop. Different
+    degradations respond to different processing, a blurred plate is
+    often more readable in plain grayscale than after aggressive
+    thresholding, so every view is tried and OCR is left to see what it
+    can read from each of them."""
     if image is None or image.size == 0:
         return []
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image.copy()
     h, w = gray.shape[:2]
-    gray = cv2.copyMakeBorder(gray, max(4, h // 20), max(4, h // 20), max(6, w // 50), max(6, w // 50), cv2.BORDER_REPLICATE)
-    gray = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-    clahe = cv2.createCLAHE(clipLimit=1.7, tileGridSize=(8, 8)).apply(gray)
-    denoise = cv2.bilateralFilter(clahe, 5, 25, 25)
-    soft = cv2.GaussianBlur(denoise, (0, 0), 1.0)
-    sharp = cv2.addWeighted(denoise, 1.25, soft, -0.25, 0)
-    normalized = cv2.divide(clahe, cv2.GaussianBlur(clahe, (0, 0), 15), scale=180)
-    return [("gray", gray), ("clahe", clahe), ("denoise", denoise), ("sharp", sharp), ("normalized", normalized)]
+    gray = cv2.copyMakeBorder(gray, max(4, h // 20), max(4, h // 20),
+                               max(6, w // 45), max(6, w // 45), cv2.BORDER_REPLICATE)
+    scale = 6.0 if quality["resolution"] < 0.4 else 4.0
+    gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    _, otsu = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants = [("gray", gray), ("otsu", otsu)]
+
+    # only one extra view is added, matched to whichever defect is worst,
+    # instead of stacking every enhancement on every crop, since that was
+    # multiplying OCR calls far past what a live app can serve quickly
+    worst_name, worst_score = min(
+        (("noise", quality["noise"]), ("blur", quality["blur"]), ("exposure", quality["exposure"])),
+        key=lambda kv: kv[1],
+    )
+    if worst_score < 0.6:
+        if worst_name == "noise":
+            variants.append(("denoise", cv2.bilateralFilter(clahe, 5, 30, 30)))
+        elif worst_name == "blur":
+            soft = cv2.GaussianBlur(clahe, (0, 0), 1.2)
+            variants.append(("sharp", cv2.addWeighted(clahe, 1.6, soft, -0.6, 0)))
+        else:
+            background = cv2.GaussianBlur(clahe, (0, 0), 15)
+            variants.append(("normalized", cv2.divide(clahe, background, scale=180)))
+    else:
+        variants.append(("clahe", clahe))
+
+    return variants
 
 
-def clean_candidate(text, min_len=1, max_len=12):
-    text = normalize_text(text)
-    return text if min_len <= len(text) <= max_len else ""
+def split_two_line(image):
+    """Many two-wheelers carry a stacked, two-line plate. A single-line
+    OCR pass reads that as one garbled line, so the top and bottom halves
+    are also tried separately when the crop is squarish rather than the
+    usual wide single-line shape."""
+    h, w = image.shape[:2]
+    if h == 0 or w / float(h) > 2.3:
+        return None
+    mid = h // 2
+    pad = max(2, h // 12)
+    top = image[: mid + pad, :]
+    bottom = image[max(0, mid - pad):, :]
+    return top, bottom
 
 
-def rapid_read(image):
+# ---------------------------------------------------------------------------
+# OCR engines
+# ---------------------------------------------------------------------------
+
+def _tesseract_read(image):
+    # image_to_data alone gives text and per-word confidence in one pass,
+    # a second image_to_string call on the same config was pure waste
+    out = []
+    for psm in (7, 8, 6):
+        config = f"--psm {psm} -c tessedit_char_whitelist={CHARS}"
+        try:
+            data = pytesseract.image_to_data(image, config=config, output_type=pytesseract.Output.DICT)
+        except Exception:
+            continue
+        text = normalize_text("".join(data.get("text", [])))
+        if not text:
+            continue
+        values = [float(c) for c in data.get("conf", []) if c not in ("-1", -1)]
+        conf = (float(np.mean(values)) / 100.0) if values else 0.3
+        out.append((text, max(conf, 0.15)))
+    return out
+
+
+def _rapidocr_read(image):
+    # the crop given here is already localized to the plate (and, for the
+    # two-line case, to one line of it), so a plain recognition pass is
+    # used instead of running full detection on top of an already-cropped
+    # region, which only doubled the work for no real gain
     engine = get_rapidocr()
     if engine is None:
         return []
     out = []
-    for mode in ("full", "rec"):
-        try:
-            if mode == "full":
-                result = engine(image)
-            else:
-                result = engine(image, use_det=False, use_cls=False, use_rec=True)
-            texts = getattr(result, "txts", None) or []
-            scores = getattr(result, "scores", None) or []
-            for i, t in enumerate(texts):
-                t = clean_candidate(t, 1, 12)
-                if t:
-                    out.append((t, float(scores[i]) if i < len(scores) else 0.0, f"rapid-{mode}"))
-        except Exception as e:
-            print(f"RapidOCR {mode} failed: {e}")
+    try:
+        result = engine(image, use_det=False, use_cls=False, use_rec=True)
+    except Exception as e:
+        print(f"rapidocr failed: {e}")
+        return out
+    texts = getattr(result, "txts", None) or []
+    scores = getattr(result, "scores", None) or []
+    for i, text in enumerate(texts):
+        text = normalize_text(text)
+        if text:
+            conf = float(scores[i]) if i < len(scores) else 0.5
+            out.append((text, max(conf, 0.15)))
     return out
 
 
-def tess_read(image, whitelist, psms=(7, 8, 10, 13)):
+# ---------------------------------------------------------------------------
+# character level fusion, the same algorithm used to combine multiple
+# photos of one plate is reused here to combine multiple OCR readings of
+# one photo, and again to combine multiple photos of the same vehicle
+# ---------------------------------------------------------------------------
+
+def _align(ref, seq, gap=-1, match=2, mismatch=-1):
+    n, m = len(ref), len(seq)
+    dp = np.zeros((n + 1, m + 1))
+    for i in range(n + 1):
+        dp[i][0] = i * gap
+    for j in range(m + 1):
+        dp[0][j] = j * gap
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            s = match if ref[i - 1] == seq[j - 1] else mismatch
+            dp[i][j] = max(dp[i-1][j-1] + s, dp[i-1][j] + gap, dp[i][j-1] + gap)
+    i, j, pairs = n, m, []
+    while i > 0 or j > 0:
+        if i > 0 and j > 0:
+            s = match if ref[i-1] == seq[j-1] else mismatch
+            if dp[i][j] == dp[i-1][j-1] + s:
+                pairs.append((i - 1, seq[j - 1])); i -= 1; j -= 1; continue
+        if i > 0 and dp[i][j] == dp[i-1][j] + gap:
+            i -= 1; continue
+        j -= 1
+    return list(reversed(pairs))
+
+
+def combine_readings(readings, credit=0.4):
+    # readings: list of dict with text, conf, weight
+    readings = [r for r in readings if r["text"]]
+    if not readings:
+        return "", []
+    # the reference sequence anchors every alignment below, so it is
+    # picked by which length carries the most weighted evidence, not by
+    # a plain median of lengths, since a couple of noisy reads that
+    # happen to share a length can otherwise outvote the real length
+    length_weight = {}
+    for r in readings:
+        L = len(r["text"])
+        length_weight[L] = length_weight.get(L, 0.0) + r["weight"] * r["conf"]
+    ref_len = max(length_weight, key=length_weight.get)
+    same_len = [r for r in readings if len(r["text"]) == ref_len]
+    ref = max(same_len, key=lambda r: r["weight"] * r["conf"])["text"]
+
+    votes = [dict() for _ in range(len(ref))]
+    for r in readings:
+        for pos, ch in _align(ref, r["text"]):
+            if pos < len(votes):
+                votes[pos][ch] = votes[pos].get(ch, 0.0) + r["weight"] * r["conf"]
+
+    for pos_votes in votes:
+        if len(pos_votes) < 2:
+            continue
+        snapshot = dict(pos_votes)
+        extra = {}
+        for ch, w in snapshot.items():
+            for alt in SIMILAR.get(ch, []):
+                if alt in snapshot and alt != ch:
+                    extra[alt] = extra.get(alt, 0.0) + w * credit
+        for alt, w in extra.items():
+            pos_votes[alt] = pos_votes.get(alt, 0.0) + w
+
+    out_text, out_conf = [], []
+    for pos_votes in votes:
+        if not pos_votes:
+            out_text.append("?"); out_conf.append(0.0); continue
+        total = sum(pos_votes.values())
+        best_ch, best_w = max(pos_votes.items(), key=lambda kv: kv[1])
+        c = best_w / total if total else 0.0
+        out_text.append(best_ch if c >= CHAR_THRESHOLD else "?")
+        out_conf.append(c)
+    return "".join(out_text), out_conf
+
+
+def reweight(readings, fused_text):
     out = []
-    for psm in psms:
-        cfg = f"--psm {psm} -l eng -c tessedit_char_whitelist={whitelist}"
-        try:
-            text = clean_candidate(pytesseract.image_to_string(image, config=cfg), 1, 12)
-            if not text:
-                continue
-            confs = []
-            try:
-                d = pytesseract.image_to_data(image, config=cfg, output_type=pytesseract.Output.DICT)
-                for c in d.get("conf", []):
-                    try:
-                        v = float(c)
-                        if v >= 0:
-                            confs.append(v / 100.0)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            out.append((text, float(np.mean(confs)) if confs else 0.30, f"tess-{psm}"))
-        except Exception:
-            pass
+    for r in readings:
+        n = min(len(r["text"]), len(fused_text))
+        agree = (sum(a == b for a, b in zip(r["text"][:n], fused_text[:n])) / n) if n else 0.0
+        out.append({**r, "weight": r["weight"] * max(0.2, agree)})
     return out
 
 
-def group_candidates(group_image, whitelist, expected_len):
-    """Recognize a plate group independently. This prevents one bad character from corrupting the whole line."""
-    variants = ocr_variants(group_image)
-    candidates = []
-    for vname, img in variants[:4]:
-        for text, conf, src in rapid_read(img):
-            if len(text) == expected_len and all(c in whitelist for c in text):
-                candidates.append((text, conf, f"{vname}-{src}"))
-        for text, conf, src in tess_read(img, whitelist, (7, 8, 10, 13)):
-            if len(text) == expected_len and all(c in whitelist for c in text):
-                candidates.append((text, conf, f"{vname}-{src}"))
-    # exact candidate consensus
-    grouped = {}
-    for text, conf, src in candidates:
-        x = grouped.setdefault(text, {"scores": [], "sources": []})
-        x["scores"].append(conf); x["sources"].append(src)
-    ranked = []
-    for text, d in grouped.items():
-        mean = float(np.mean(d["scores"]))
-        count = len(d["scores"])
-        ranked.append((text, mean + min(count, 4) * 0.08, mean, count))
-    ranked.sort(key=lambda x: x[1], reverse=True)
-    return ranked[:8]
+def fuse(readings):
+    first, _ = combine_readings(readings)
+    if not first:
+        return "", []
+    return combine_readings(reweight(readings, first))
 
 
-def whole_candidates(plate, rectified):
+def repair_format(text):
+    """Indian plates follow a fixed letter/digit template (state code,
+    RTO code, series, number). Most OCR misses at this point are a single
+    confusable character sitting in a position whose class is already
+    known from the template, so this swaps it for the confusable of the
+    right class instead of leaving an otherwise-correct read wrong. It
+    only ever swaps within the existing confusable pairs, never guesses
+    a fresh character, and does nothing to text that does not fit the
+    template lengths."""
+    if len(text) == 10:
+        template = "LLDDLLDDDD"
+    elif len(text) == 9:
+        template = "LLDDLDDDD"
+    else:
+        return text
+    out = list(text)
+    for i, want in enumerate(template):
+        ch = out[i]
+        is_digit = ch.isdigit()
+        if want == "D" and not is_digit:
+            for alt in SIMILAR.get(ch, []):
+                if alt.isdigit():
+                    out[i] = alt
+                    break
+        elif want == "L" and is_digit:
+            for alt in SIMILAR.get(ch, []):
+                if alt.isalpha():
+                    out[i] = alt
+                    break
+    return "".join(out)
+
+
+def indian_format_bonus(text):
+    """A small, optional nudge, never a hard requirement. Plates that are
+    not this exact Indian format (bikes with two-line plates, BH-series,
+    older formats, other countries) still get a normal reading."""
+    if len(text) != 10:
+        return 0.0
+    bonus = 0.0
+    if text[:2] in INDIAN_STATE_CODES:
+        bonus += 0.06
+    if text[2:4].isdigit():
+        bonus += 0.02
+    if text[6:10].isdigit():
+        bonus += 0.02
+    return bonus
+
+
+# ---------------------------------------------------------------------------
+# per image and per group pipeline
+# ---------------------------------------------------------------------------
+
+def read_plate(plate, rectified, quality):
+    """Runs every OCR engine over every preprocessing view of one crop
+    (plus a two-line split for squarish plates) and fuses all of it into
+    a single reading for this one photo."""
     sources = []
     for name, img in (("raw", plate), ("rectified", rectified)):
-        if img is None:
+        if img is None or img.size == 0:
             continue
-        for vname, variant in ocr_variants(img):
+        for vname, variant in ocr_variants(img, quality):
             sources.append((f"{name}-{vname}", variant))
-    results = []
+
+    two_line = split_two_line(rectified) if rectified is not None else None
+    if two_line is not None:
+        top, bottom = two_line
+        for half_name, half in (("top", top), ("bottom", bottom)):
+            for vname, variant in ocr_variants(half, quality):
+                sources.append((f"line-{half_name}-{vname}", variant))
+
+    readings = []
     for name, img in sources:
-        for text, conf, src in rapid_read(img):
-            if len(text) <= 12:
-                results.append((text, conf, f"{name}-{src}"))
-        for text, conf, src in tess_read(img, LETTERS + DIGITS, (6, 7, 8, 11, 13)):
-            if len(text) <= 12:
-                results.append((text, conf, f"{name}-{src}"))
-    return results
+        for text, conf in _tesseract_read(img):
+            readings.append({"text": text, "conf": conf, "weight": 1.0, "source": f"tess-{name}"})
+        for text, conf in _rapidocr_read(img):
+            readings.append({"text": text, "conf": conf, "weight": 1.0, "source": f"rapid-{name}"})
+
+    if not readings:
+        return "", [], []
+
+    # reading two half-plate texts back to back is a plausible extra
+    # candidate for a stacked plate, added alongside the normal readings
+    if two_line is not None:
+        top_texts = [r["text"] for r in readings if "line-top" in r["source"]]
+        bottom_texts = [r["text"] for r in readings if "line-bottom" in r["source"]]
+        if top_texts and bottom_texts:
+            combo = max(top_texts, key=len) + max(bottom_texts, key=len)
+            readings.append({"text": combo, "conf": 0.4, "weight": 1.0, "source": "two-line-combo"})
+
+    text, char_conf = fuse(readings)
+    return text, char_conf, readings
 
 
-def extract_groups(image):
-    """Use overlapping group crops so blur or spacing does not fall exactly on a boundary."""
-    if image is None:
-        return []
-    h, w = image.shape[:2]
-    # Text generally occupies the middle of the detected plate.
-    y1, y2 = int(h * 0.10), int(h * 0.92)
-    base = image[y1:y2, :]
-    w = base.shape[1]
-    specs = [(0.00, 0.25, LETTERS, 2), (0.20, 0.43, DIGITS, 2), (0.38, 0.63, LETTERS, 2), (0.58, 1.00, DIGITS, 4)]
-    groups = []
-    for a, b, whitelist, n in specs:
-        x1 = max(0, int(w * a) - max(2, int(w * 0.015)))
-        x2 = min(w, int(w * b) + max(2, int(w * 0.015)))
-        groups.append((base[:, x1:x2], whitelist, n))
-    return groups
+def confidence_score(ocr_conf, agreement, stability, quality, geometry):
+    weights = SCORE_WEIGHTS
+    parts = {"ocr": ocr_conf, "agreement": agreement, "stability": stability,
+             "quality": quality, "geometry": geometry}
+    score = sum(weights.get(k, 0.0) * parts[k] for k in parts)
+    return clamp(score)
 
 
-def char_candidates(image, whitelist):
-    """Per-character fallback using equal-width cells, useful when whole-line OCR drops a leading letter."""
-    if image is None or image.size == 0:
-        return []
-    h, w = image.shape[:2]
-    results = []
-    for i in range(2):
-        x1 = max(0, int(w * i / 2) - 2)
-        x2 = min(w, int(w * (i + 1) / 2) + 2)
-        cell = image[:, x1:x2]
-        chars = []
-        for vname, v in ocr_variants(cell)[:3]:
-            for t, c, src in tess_read(v, whitelist, (10, 13)):
-                if t and t[0] in whitelist:
-                    chars.append((t[0], c, f"{vname}-{src}"))
-        if chars:
-            chars.sort(key=lambda x: x[1], reverse=True)
-            results.append(chars[:5])
-        else:
-            results.append([])
-    return results
+def final_text(text, char_conf, score):
+    if score < SCORE_THRESHOLD or not text:
+        return None, "unreadable"
+    return "".join(c if cc >= CHAR_THRESHOLD else "?" for c, cc in zip(text, char_conf)), "ok"
 
 
-def build_structured_candidates(plate, rectified):
-    """Decode AA00AA0000 from independent group evidence, without hard-coding a plate."""
-    base = rectified if rectified is not None else plate
-    group_specs = extract_groups(base)
-    if len(group_specs) != 4:
-        return []
-    group_ranked = []
-    for crop, whitelist, n in group_specs:
-        group_ranked.append(group_candidates(crop, whitelist, n))
-
-    # If a group has no complete reading, retain no synthetic guess.
-    if any(not g for g in group_ranked):
-        return []
-
-    combinations = []
-    top_each = [g[:5] for g in group_ranked]
-    for combo in itertools.product(*top_each):
-        text = "".join(x[0] for x in combo)
-        if len(text) != 10:
-            continue
-        if text[:2] not in INDIAN_STATE_CODES:
-            state_bonus = 0.0
-        else:
-            state_bonus = 0.45
-        score = state_bonus + sum(x[1] for x in combo) / 4.0
-        combinations.append((text, score, combo))
-    combinations.sort(key=lambda x: x[1], reverse=True)
-    return combinations[:12]
+def process_image(image):
+    plate, bbox, det_conf, backend = detect_plate(image)
+    if plate is None:
+        return None
+    quality = check_quality(plate)
+    rectified = rectify(plate)
+    text, char_conf, readings = read_plate(plate, rectified, quality)
+    ocr_conf = float(np.mean([r["conf"] for r in readings])) if readings else 0.0
+    return {
+        "plate": plate, "rectified": rectified, "bbox": bbox, "det_conf": det_conf,
+        "backend": backend, "quality": quality, "text": text, "char_conf": char_conf,
+        "ocr_conf": ocr_conf, "readings": readings,
+        "weight": max(quality["combined"], 0.05),
+    }
 
 
-def candidate_score(text, source_conf=0.0, repetition=0):
-    text = normalize_text(text)
-    if len(text) != 10:
-        return 0.05 * clamp(source_conf)
-    state = text[:2] in INDIAN_STATE_CODES
-    structure = (0.45 * state + 0.20 * text[2:4].isdigit() + 0.15 * text[4:6].isalpha() + 0.20 * text[6:10].isdigit())
-    return 0.68 * structure + 0.22 * clamp(source_conf) + 0.10 * min(repetition / 4.0, 1.0)
+def process_group(images):
+    """images: list of BGR frames (photos or video frames) of the same
+    vehicle. Detects and reads each one, then fuses the readings the same
+    way multiple OCR views of a single photo are fused above."""
+    results = [process_image(img) for img in images]
+    results = [r for r in results if r is not None]
+    if not results:
+        return None
+
+    per_image = [{"text": r["text"], "conf": r["ocr_conf"], "weight": r["weight"]} for r in results]
+    fused_text, char_conf = fuse(per_image) if len(results) > 1 else (results[0]["text"], results[0]["char_conf"])
+    fused_text = repair_format(fused_text)
+
+    agreement = float(np.mean([
+        (sum(a == b for a, b in zip(r["text"][:len(fused_text)], fused_text)) / len(fused_text))
+        if fused_text else 0.0
+        for r in results
+    ])) if fused_text else 0.0
+    stability = float(np.mean(char_conf)) if char_conf else 0.0
+    ocr_conf = float(np.mean([r["ocr_conf"] for r in results]))
+    quality = float(np.mean([r["quality"]["combined"] for r in results]))
+    geometry = float(np.mean([r["quality"]["perspective"] for r in results]))
+
+    score = confidence_score(ocr_conf, agreement, stability, quality, geometry)
+    score = clamp(score + indian_format_bonus(fused_text))
+    text, status = final_text(fused_text, char_conf, score)
+
+    return {"results": results, "fused_text": fused_text, "score": score, "text": text,
+            "status": status, "agreement": agreement}
 
 
-def run_ocr(plate, rectified):
-    all_results = []
-    for text, conf, src in whole_candidates(plate, rectified):
-        all_results.append({"text": text, "confidence": conf * 100, "source": src, "image": rectified if rectified is not None else plate})
+# ---------------------------------------------------------------------------
+# input helpers
+# ---------------------------------------------------------------------------
 
-    # Structured group decoding is given strong weight only when every group has
-    # a real OCR reading. It is not character invention.
-    structured = build_structured_candidates(plate, rectified)
-    for text, score, combo in structured:
-        all_results.append({"text": text, "confidence": clamp(score / 1.6) * 100, "source": "structured-groups", "image": rectified if rectified is not None else plate, "structured": True})
-
-    if not all_results:
-        return [], None
-
-    grouped = {}
-    for r in all_results:
-        t = normalize_text(r["text"])
-        if not t:
-            continue
-        g = grouped.setdefault(t, {"items": [], "count": 0})
-        g["items"].append(r); g["count"] += 1
-
-    # Add state-prefix-repaired candidates as separate candidates.
-    # This is constrained to the official state-code set and never changes
-    # positions 2..9. For example HH02ER9194 can become MH02ER9194 only
-    # when MH is strongly favored among valid state codes.
-    repaired = []
-    for text, g in list(grouped.items()):
-        if len(text) != 10 or text[:2] in INDIAN_STATE_CODES:
-            continue
-        repaired_text, repair_score = repair_state_prefix(text)
-        if repaired_text != text and repair_score > 0:
-            item = max(g["items"], key=lambda x: x["confidence"]).copy()
-            item["text"] = repaired_text
-            item["confidence"] = min(99.0, item["confidence"] + repair_score * 8.0)
-            item["source"] = item.get("source", "") + "-state-repaired"
-            item["state_repaired"] = True
-            repaired.append(item)
-
-    for item in repaired:
-        t = normalize_text(item["text"])
-        g = grouped.setdefault(t, {"items": [], "count": 0})
-        g["items"].append(item)
-        g["count"] += 1
-
-    best = None
-    best_s = -1
-    for text, g in grouped.items():
-        mean_conf = float(np.mean([clamp(x["confidence"] / 100) for x in g["items"]]))
-        s = candidate_score(text, mean_conf, g["count"])
-        # A valid state code is a strong structural constraint.
-        if len(text) == 10 and text[:2] in INDIAN_STATE_CODES:
-            s += 0.14
-        if len(text) == 10 and text[:2] not in INDIAN_STATE_CODES:
-            s -= 0.18
-        if any(x.get("structured") for x in g["items"]):
-            s += 0.08
-        if any(x.get("state_repaired") for x in g["items"]):
-            # State repair is weaker than a direct valid OCR reading.
-            s -= 0.015
-        if s > best_s:
-            best_s = s
-            best = {**max(g["items"], key=lambda x: x["confidence"]), "text": text, "agreement": min(g["count"] / 4.0, 1.0), "combined_score": clamp(s)}
-    return all_results + repaired, best
+def read_image_file(uploaded_file):
+    """Decodes jpg, png, webp and avif alike through Pillow, since
+    cv2.imdecode does not understand webp or avif on its own."""
+    image = Image.open(uploaded_file).convert("RGB")
+    return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
 
-def detect_plate(image):
+def read_video_frames(uploaded_file, max_frames=8):
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp.write(uploaded_file.getvalue())
+        tmp_path = tmp.name
+    frames = []
     try:
-        results = detector.predict(source=image, verbose=False)
-    except Exception as e:
-        print(f"Detection error: {e}")
-        return None, None, 0.0
-    if not results or results[0].boxes is None or len(results[0].boxes) == 0:
-        return None, None, 0.0
-    boxes = results[0].boxes
-    confs = [float(b.conf[0].item()) for b in boxes]
-    i = int(np.argmax(confs))
-    b = boxes[i]
-    x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
-    h, w = image.shape[:2]
-    x1, y1 = max(0, min(x1, w - 1)), max(0, min(y1, h - 1))
-    x2, y2 = max(0, min(x2, w)), max(0, min(y2, h))
-    if x2 <= x1 or y2 <= y1:
-        return None, None, confs[i]
-    return image[y1:y2, x1:x2].copy(), (x1, y1, x2, y2), confs[i]
+        cap = cv2.VideoCapture(tmp_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or max_frames
+        step = max(1, total // max_frames)
+        idx = 0
+        while cap.isOpened() and len(frames) < max_frames:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if idx % step == 0:
+                frames.append(frame)
+            idx += 1
+        cap.release()
+    finally:
+        os.unlink(tmp_path)
+    return frames
 
 
-def main():
-    st.set_page_config(page_title="License Plate Recognition", page_icon="🚗", layout="wide")
-    st.markdown("""
-    <style>
-    .stApp{background:#080d16;color:#e8edf5}.block-container{max-width:1240px;padding-top:2rem}
-    .title{font-size:2.1rem;font-weight:700}.subtitle{color:#8e9bb0;margin-bottom:1.2rem}
-    .result-box{border:1px solid #26364d;border-radius:12px;background:#0d1624;padding:20px;text-align:center}
-    .plate{color:#35e58d;font:700 2.2rem 'Courier New',monospace;letter-spacing:3px}
-    .metric{border:1px solid #26364d;border-radius:10px;background:#0a111c;padding:15px}.metric-label{color:#8190a7;font-size:.78rem}.metric-value{font-size:1.35rem;font-weight:700;margin-top:4px}
-    .candidate{color:#aab6c8;font-family:monospace;font-size:.85rem;margin-right:8px}
-    </style>""", unsafe_allow_html=True)
-    st.markdown('<div class="title">License Plate Recognition</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">Detect and read Indian vehicle license plates using YOLO, OpenCV, RapidOCR and Tesseract.</div>', unsafe_allow_html=True)
-    uploaded = st.file_uploader("Upload a vehicle image", type=["jpg","jpeg","png","webp","avif"], help="The pipeline uses multiple OCR views for clear, low-resolution and blurred plates.")
-    if uploaded is None:
-        st.info("Upload a vehicle image to start recognition.")
-        return
-    data = np.frombuffer(uploaded.getvalue(), dtype=np.uint8)
-    image_bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
-    if image_bgr is None:
-        st.error("Could not decode the uploaded image.")
-        return
-    if not st.button("Recognize Plate", type="primary", use_container_width=True):
-        return
-    with st.spinner("Detecting plate and running robust OCR..."):
-        original_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        plate, bbox, detector_conf = detect_plate(image_bgr)
-        if plate is None:
-            st.image(original_rgb, caption="Uploaded Image", use_container_width=True)
-            st.error("No license plate detected.")
-            return
-        quality, _ = calculate_quality_score(plate)
-        rectified = rectify_plate(plate)
-        results, best = run_ocr(plate, rectified)
-        if best:
-            text = normalize_text(best["text"])
-            ocr_conf = clamp(float(best.get("confidence", 0)) / 100)
-            agreement = float(best.get("agreement", 0))
-            cleaned = best.get("image", rectified)
+# ---------------------------------------------------------------------------
+# streamlit UI
+# ---------------------------------------------------------------------------
+
+st.set_page_config(page_title="License Plate Recognition", page_icon="🚗", layout="wide")
+st.markdown("""
+<style>
+.stApp{background:#080d16;color:#e8edf5}.block-container{max-width:1240px;padding-top:2rem}
+.title{font-size:2.1rem;font-weight:700}.subtitle{color:#8e9bb0;margin-bottom:1.2rem}
+.result-box{border:1px solid #26364d;border-radius:12px;background:#0d1624;padding:20px;text-align:center}
+.plate{color:#35e58d;font:700 2.2rem 'Courier New',monospace;letter-spacing:3px}
+.metric{border:1px solid #26364d;border-radius:10px;background:#0a111c;padding:15px}
+.metric-label{color:#8190a7;font-size:.78rem}.metric-value{font-size:1.35rem;font-weight:700;margin-top:4px}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="title">License Plate Recognition</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Works on any vehicle. Upload one photo, several photos of the same '
+            'vehicle, or a short video, for a much better reading on blur or motion.</div>',
+            unsafe_allow_html=True)
+
+mode = st.radio("Input", ["Single photo", "Multiple photos of the same vehicle", "Video"], horizontal=True)
+
+images = []
+if mode == "Single photo":
+    uploaded = st.file_uploader("Upload a vehicle photo", type=["jpg", "jpeg", "png", "webp", "avif"])
+    if uploaded is not None:
+        images = [read_image_file(uploaded)]
+elif mode == "Multiple photos of the same vehicle":
+    uploaded = st.file_uploader("Upload several photos of the same vehicle", type=["jpg", "jpeg", "png", "webp", "avif"],
+                                 accept_multiple_files=True)
+    if uploaded:
+        images = [read_image_file(f) for f in uploaded]
+else:
+    uploaded = st.file_uploader("Upload a short video of the vehicle", type=["mp4", "mov", "avi", "mkv"])
+    if uploaded is not None:
+        with st.spinner("Reading frames from the video..."):
+            images = read_video_frames(uploaded)
+
+if not images:
+    st.info("Upload to start.")
+else:
+    run = st.button("Recognize Plate", type="primary", use_container_width=True)
+    if run:
+        with st.spinner(f"Detecting and reading {len(images)} frame(s)..."):
+            result = process_group(images)
+
+        if result is None:
+            st.image(cv2.cvtColor(images[0], cv2.COLOR_BGR2RGB), caption="Uploaded Image", use_container_width=True)
+            st.error("No license plate detected in any of the given photos.")
         else:
-            text, ocr_conf, agreement, cleaned = "", 0.0, 0.0, rectified
-        geometry = perspective_score(plate)
-        overall = clamp(
-            SCORE_WEIGHTS.get("ocr", .3) * ocr_conf +
-            SCORE_WEIGHTS.get("agreement", .2) * agreement +
-            SCORE_WEIGHTS.get("stability", .2) * agreement +
-            SCORE_WEIGHTS.get("quality", .15) * quality +
-            SCORE_WEIGHTS.get("geometry", .15) * geometry
-        )
-        annotated = image_bgr.copy()
-        x1,y1,x2,y2 = bbox
-        cv2.rectangle(annotated,(x1,y1),(x2,y2),(0,255,0),3)
-        label = f"{text}  {detector_conf:.0%}" if text else "PLATE DETECTED"
-        (lw,lh),_ = cv2.getTextSize(label,cv2.FONT_HERSHEY_SIMPLEX,.7,2)
-        ly=max(30,y1)
-        cv2.rectangle(annotated,(x1,ly-lh-15),(x1+lw+12,ly),(0,180,0),-1)
-        cv2.putText(annotated,label,(x1+6,ly-8),cv2.FONT_HERSHEY_SIMPLEX,.7,(255,255,255),2,cv2.LINE_AA)
-        annotated_rgb=cv2.cvtColor(annotated,cv2.COLOR_BGR2RGB)
-    c1,c2,c3=st.columns(3)
-    with c1: st.image(original_rgb,caption="Uploaded Image",use_container_width=True)
-    with c2:
-        if cleaned is not None:
-            cd=cv2.cvtColor(cleaned,cv2.COLOR_GRAY2RGB) if cleaned.ndim==2 else cv2.cvtColor(cleaned,cv2.COLOR_BGR2RGB)
-            st.image(cd,caption="Detected Plate (Cleaned)",use_container_width=True)
-    with c3: st.image(annotated_rgb,caption="Annotated Image",use_container_width=True)
-    if text:
-        st.markdown(f'<div class="result-box"><div style="color:#8090a8;font-size:.75rem;letter-spacing:1px">DETECTED PLATE NUMBER</div><div class="plate">{html.escape(text)}</div></div>',unsafe_allow_html=True)
-        st.write("")
-        cols=st.columns(4)
-        for col,label,value in zip(cols,["Overall Confidence","Detection Confidence","OCR Confidence","Image Quality"],[overall,detector_conf,ocr_conf,quality]):
-            with col: st.markdown(f'<div class="metric"><div class="metric-label">{label}</div><div class="metric-value">{value:.1%}</div></div>',unsafe_allow_html=True)
-        candidates=[]
-        for r in results:
-            t=normalize_text(r.get("text",""))
-            if t and t not in candidates: candidates.append(t)
-        if candidates:
-            st.markdown("**OCR candidates:** " + " ".join(f'<span class="candidate">{html.escape(x)}</span>' for x in candidates[:12]),unsafe_allow_html=True)
-    else:
-        st.warning("Plate detected, but OCR could not produce a reliable reading.")
+            best = max(result["results"], key=lambda r: r["quality"]["combined"])
+            annotated = images[result["results"].index(best)].copy()
+            x1, y1, x2, y2 = best["bbox"]
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 3)
+            label = result["text"] or "PLATE DETECTED"
+            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            ly = max(30, y1)
+            cv2.rectangle(annotated, (x1, ly - lh - 15), (x1 + lw + 12, ly), (0, 180, 0), -1)
+            cv2.putText(annotated, label, (x1 + 6, ly - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (255, 255, 255), 2, cv2.LINE_AA)
 
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.image(cv2.cvtColor(images[result["results"].index(best)], cv2.COLOR_BGR2RGB),
+                         caption="Best frame", use_container_width=True)
+            with c2:
+                cleaned = best["rectified"] if best["rectified"] is not None else best["plate"]
+                disp = cv2.cvtColor(cleaned, cv2.COLOR_GRAY2RGB) if cleaned.ndim == 2 else cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB)
+                st.image(disp, caption="Detected plate", use_container_width=True)
+            with c3:
+                st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), caption="Annotated", use_container_width=True)
 
-if __name__ == "__main__":
-    main()
+            if result["text"]:
+                st.markdown(
+                    f'<div class="result-box"><div style="color:#8090a8;font-size:.75rem;letter-spacing:1px">'
+                    f'DETECTED PLATE NUMBER</div><div class="plate">{result["text"]}</div></div>',
+                    unsafe_allow_html=True,
+                )
+                st.write("")
+                m1, m2, m3, m4 = st.columns(4)
+                for col, label, value in [
+                    (m1, "Overall Confidence", result["score"]),
+                    (m2, "Detection Confidence", best["det_conf"]),
+                    (m3, "Frames Used", len(result["results"])),
+                    (m4, "Image Quality", best["quality"]["combined"]),
+                ]:
+                    with col:
+                        text_value = f"{value:.1%}" if isinstance(value, float) else str(value)
+                        st.markdown(f'<div class="metric"><div class="metric-label">{label}</div>'
+                                    f'<div class="metric-value">{text_value}</div></div>', unsafe_allow_html=True)
+            else:
+                st.warning("A plate was detected, but the reading was not reliable enough to report. "
+                           "Try a clearer or closer photo, or add a couple more photos of the same vehicle.")
