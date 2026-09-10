@@ -651,525 +651,123 @@ def read_video_frames(uploaded_file, max_frames=8):
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# enhanced single-image Streamlit UI
+# ---------------------------------------------------------------------------
+# Reference-style single-image Streamlit UI
 # ---------------------------------------------------------------------------
 
-st.set_page_config(
-    page_title="SoApp | Number Plate Recognition",
-    page_icon="🚘",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="License Plate Recognition", page_icon="🚘", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
-:root {
-    --bg: #070b12;
-    --panel: #0c131f;
-    --panel-2: #101a29;
-    --border: #24334a;
-    --muted: #8290a5;
-    --text: #edf3fb;
-    --green: #2ee88b;
-    --green-dark: #123d2b;
-    --blue: #5aa7ff;
-}
-
-.stApp {
-    background:
-        radial-gradient(circle at 8% 0%, rgba(55, 122, 255, .09), transparent 28%),
-        radial-gradient(circle at 92% 8%, rgba(46, 232, 139, .07), transparent 25%),
-        var(--bg);
-    color: var(--text);
-}
-
-.block-container {
-    max-width: 1280px;
-    padding: 2.2rem 2rem 4rem;
-}
-
-header[data-testid="stHeader"] {
-    background: transparent;
-}
-
-.hero {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 20px;
-    margin-bottom: 1.5rem;
-}
-
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 13px;
-}
-
-.brand-icon {
-    width: 46px;
-    height: 46px;
-    display: grid;
-    place-items: center;
-    border-radius: 13px;
-    background: linear-gradient(145deg, #14372a, #0d2019);
-    border: 1px solid #245a43;
-    font-size: 1.45rem;
-}
-
-.title {
-    font-size: 2rem;
-    line-height: 1.1;
-    font-weight: 750;
-    letter-spacing: -.035em;
-}
-
-.subtitle {
-    color: var(--muted);
-    font-size: .92rem;
-    margin-top: 5px;
-}
-
-.status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 8px 12px;
-    border: 1px solid #234a3a;
-    border-radius: 999px;
-    background: #0b1914;
-    color: #74e7ae;
-    font-size: .78rem;
-    white-space: nowrap;
-}
-
-.status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--green);
-    box-shadow: 0 0 10px rgba(46,232,139,.7);
-}
-
-.section-label {
-    color: #8e9bb0;
-    font-size: .72rem;
-    letter-spacing: 1.7px;
-    text-transform: uppercase;
-    font-weight: 700;
-    margin: 1.2rem 0 .55rem;
-}
-
-.upload-card {
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    background: linear-gradient(180deg, rgba(15,25,40,.96), rgba(9,16,27,.96));
-    padding: 10px;
-    box-shadow: 0 16px 45px rgba(0,0,0,.16);
-}
-
-div[data-testid="stFileUploader"] {
-    border: 1px dashed #38506e;
-    border-radius: 12px;
-    background: rgba(7, 13, 22, .7);
-    padding: .45rem;
-}
-
-div[data-testid="stFileUploaderDropzoneInstructions"] > div:first-child {
-    color: #e8eef7;
-}
-
-div[data-testid="stFileUploaderDropzone"] {
-    min-height: 145px;
-}
-
-div[data-testid="stFileUploader"] small {
-    color: #73839a;
-}
-
-.image-card {
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--panel);
-    padding: 10px;
-}
-
-.image-title {
-    color: #9aa8bc;
-    font-size: .72rem;
-    letter-spacing: 1.3px;
-    text-transform: uppercase;
-    font-weight: 700;
-    padding: 3px 5px 10px;
-}
-
-.result-shell {
-    margin-top: 1.4rem;
-    border: 1px solid var(--border);
-    border-radius: 18px;
-    background: linear-gradient(180deg, #0e1725, #09111d);
-    overflow: hidden;
-}
-
-.result-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 17px 20px;
-    border-bottom: 1px solid #1c2a3e;
-}
-
-.result-title {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-weight: 700;
-}
-
-.check {
-    width: 29px;
-    height: 29px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    background: var(--green);
-    color: #06150d;
-    font-weight: 900;
-}
-
-.result-state {
-    color: #72e5ab;
-    font-size: .75rem;
-    border: 1px solid #24543e;
-    background: #0b1d15;
-    border-radius: 999px;
-    padding: 5px 9px;
-}
-
-.plate-wrap {
-    padding: 22px 20px 20px;
-    text-align: center;
-}
-
-.eyebrow {
-    color: #7e8da4;
-    font-size: .69rem;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    font-weight: 700;
-}
-
-.plate-number {
-    color: #3bea95;
-    font: 750 clamp(1.9rem, 5vw, 3.15rem)/1.15 "Courier New", monospace;
-    letter-spacing: .16em;
-    margin: 9px 0 7px;
-    word-break: break-word;
-    text-shadow: 0 0 24px rgba(46,232,139,.12);
-}
-
-.plate-sub {
-    color: #738198;
-    font-size: .76rem;
-}
-
-.confidence-track {
-    height: 7px;
-    background: #182538;
-    border-radius: 99px;
-    overflow: hidden;
-    margin: 17px auto 0;
-    max-width: 500px;
-}
-
-.confidence-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #27c97a, #55efa5);
-    border-radius: inherit;
-}
-
-.metric-grid {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 10px;
-    padding: 0 20px 20px;
-}
-
-.metric {
-    min-height: 92px;
-    border: 1px solid #223148;
-    border-radius: 12px;
-    background: #0a121e;
-    padding: 13px 14px;
-}
-
-.metric-label {
-    color: #78869b;
-    font-size: .68rem;
-    text-transform: uppercase;
-    letter-spacing: .8px;
-    font-weight: 650;
-}
-
-.metric-value {
-    color: #edf3fb;
-    font-size: 1.3rem;
-    font-weight: 750;
-    margin-top: 7px;
-}
-
-.metric-value.good {
-    color: #45e79a;
-}
-
-.metric-note {
-    color: #596980;
-    font-size: .67rem;
-    margin-top: 3px;
-}
-
-.detail-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    padding: 0 20px 20px;
-}
-
-.detail {
-    border-top: 1px solid #1c293c;
-    padding: 12px 3px 0;
-}
-
-.detail-name {
-    color: #748299;
-    font-size: .7rem;
-}
-
-.detail-value {
-    color: #cbd6e5;
-    font-size: .83rem;
-    margin-top: 4px;
-    font-weight: 600;
-}
-
-.warning-box {
-    margin-top: 1rem;
-    border: 1px solid #584b28;
-    background: #19160c;
-    color: #d8c88c;
-    border-radius: 12px;
-    padding: 12px 14px;
-    font-size: .82rem;
-}
-
-.error-box {
-    border: 1px solid #5b2e36;
-    background: #1b0e12;
-    color: #ef9da9;
-    border-radius: 13px;
-    padding: 16px;
-}
-
-.footer-note {
-    color: #56657a;
-    font-size: .7rem;
-    text-align: center;
-    margin-top: 2rem;
-}
-
-@media (max-width: 900px) {
-    .metric-grid { grid-template-columns: repeat(2, 1fr); }
-    .detail-grid { grid-template-columns: 1fr; }
-    .hero { align-items: flex-start; }
-}
-
-@media (max-width: 600px) {
-    .block-container { padding: 1.3rem 1rem 3rem; }
-    .title { font-size: 1.55rem; }
-    .status-pill { display: none; }
-    .metric-grid { grid-template-columns: repeat(2, 1fr); padding: 0 12px 12px; }
-    .result-head, .plate-wrap { padding-left: 14px; padding-right: 14px; }
-}
+.stApp{background:#070c14;color:#eef3fb}.block-container{max-width:1180px;padding:28px 28px 36px}header[data-testid="stHeader"]{background:transparent}
+.app-title{font-size:30px;line-height:1.15;font-weight:800;letter-spacing:-.8px;margin:0}.app-subtitle{color:#8c9bb1;font-size:13px;margin-top:10px}
+.ai-badge{border:1px solid #304767;border-radius:9px;padding:10px 15px;min-width:145px;background:#0b1320}.ai-line{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:700}.ai-dot{width:9px;height:9px;border-radius:50%;background:#35d58c;box-shadow:0 0 10px rgba(53,213,140,.35)}.ai-sub{color:#718199;font-size:10px;margin-top:5px}
+.app-frame{border:1px solid #263b58;border-radius:13px;background:#0a111d;margin-top:32px;padding:25px 17px 17px}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin:0 14px 24px}.step{position:relative;min-height:82px}.step:after{content:"";position:absolute;left:44px;right:-28px;top:16px;height:1px;background:#1d2e45}.step:last-child:after{display:none}.step-num{position:relative;z-index:2;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:#edf3ff;color:#182337;font-weight:800;font-size:13px}.step-title{font-size:14px;font-weight:750;margin-top:11px}.step-desc{color:#75859b;font-size:11px;margin-top:5px}
+.panel-heading{font-size:14px;font-weight:750;margin-bottom:7px}.panel-copy{color:#e5eaf2;font-size:12px;line-height:1.65;min-height:40px}
+div[data-testid="stFileUploader"]{border:1px dashed #3c5575;border-radius:11px;background:#101a28;padding:6px;margin-top:7px}div[data-testid="stFileUploaderDropzone"]{min-height:132px}div[data-testid="stFileUploaderDropzoneInstructions"]>div:first-child{color:#dce5f2}div[data-testid="stFileUploaderDropzoneInstructions"] span,div[data-testid="stFileUploaderDropzoneInstructions"] small{color:#8190a5}
+.stButton>button{width:100%;min-height:42px;border:0;border-radius:8px;background:#315cf0;color:white;font-weight:750;font-size:13px;margin-top:8px}.stButton>button:hover{background:#3d68f6;color:white}.stButton>button:disabled{background:#1d2b43;color:#74849a}
+.image-card-title{font-size:13px;font-weight:750;margin:17px 0 10px}.image-shell{border:1px solid #273b57;border-radius:10px;background:#0c1522;min-height:240px;overflow:hidden}.image-placeholder{min-height:240px;display:grid;place-items:center;color:#66778e;font-size:12px}
+.result-card{border:1px solid #273b57;border-radius:11px;background:#0c1522;margin-top:28px;padding:18px 18px 16px}.result-top{display:flex;align-items:center;gap:12px}.result-icon{width:31px;height:31px;border-radius:50%;display:grid;place-items:center;background:#243650;color:#b7c5d9;font-weight:800}.result-icon.success{background:#25cf83;color:#062117}.result-title{font-size:15px;font-weight:800}.result-note{color:#6f8097;font-size:11px;margin-top:4px}.result-pill{margin-left:auto;border:1px solid #25573f;background:#0b1c15;color:#5fe0a1;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:700}
+.plate-label{color:#6e8097;text-transform:uppercase;letter-spacing:2px;font-size:10px;text-align:center;margin-top:22px}.plate-text{color:#39df91;font-family:"Courier New",monospace;font-size:31px;font-weight:800;letter-spacing:4px;text-align:center;margin:7px 0 3px;word-break:break-all}.plate-small{color:#64758c;font-size:10px;text-align:center}.progress{height:6px;background:#1b2a3f;border-radius:99px;overflow:hidden;margin:15px auto 0;max-width:480px}.progress>div{height:100%;background:#32d98e;border-radius:99px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:18px}.metric{border:1px solid #203149;border-radius:8px;padding:10px;background:#09121e}.metric-label{color:#708097;font-size:9px;text-transform:uppercase;letter-spacing:.7px}.metric-value{color:#eef3fb;font-size:16px;font-weight:800;margin-top:5px}.metric-value.green{color:#4ce29c}.metric-note{color:#586981;font-size:9px;margin-top:3px}.details{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;border-top:1px solid #1b2a3e;margin-top:15px;padding-top:13px}.detail-label{color:#64758b;font-size:9px}.detail-value{color:#c9d4e3;font-size:11px;font-weight:650;margin-top:4px}
+.empty-card{border:1px solid #273b57;border-radius:11px;background:#0c1522;padding:18px;margin-top:28px;display:flex;align-items:center;gap:12px}.empty-icon{width:32px;height:32px;border-radius:50%;background:#25364f;display:grid;place-items:center;color:#b4c0d2}.empty-title{font-size:13px;font-weight:750}.empty-text{color:#6e8098;font-size:10px;margin-top:4px}.error-card{border:1px solid #5b3540;background:#1a0f14;color:#eaa5b0;border-radius:9px;padding:13px;margin-top:15px;font-size:11px}
+.footer{border-top:1px solid #1d2d43;margin-top:31px;padding-top:15px;display:flex;justify-content:space-between;color:#74849a;font-size:9px}.footer strong{color:#dce5f1}[data-testid="stToolbar"]{visibility:hidden}
+@media(max-width:850px){.steps{gap:10px;margin-left:5px;margin-right:5px}.step:after{right:-10px}.metrics{grid-template-columns:repeat(2,1fr)}.details{grid-template-columns:1fr}}@media(max-width:650px){.block-container{padding:20px 14px 30px}.app-frame{padding:18px 10px 12px}.steps{grid-template-columns:1fr}.step{min-height:55px}.step:after{display:none}.app-title{font-size:25px}.ai-badge{display:none}}
 </style>
 """, unsafe_allow_html=True)
 
-# Header
-st.markdown("""
-<div class="hero">
-  <div>
-    <div class="brand">
-      <div class="brand-icon">🚘</div>
-      <div>
-        <div class="title">Number Plate Recognition</div>
-        <div class="subtitle">AI-powered Indian vehicle number plate detection & OCR</div>
-      </div>
-    </div>
-  </div>
-  <div class="status-pill"><span class="status-dot"></span>Recognition system ready</div>
-</div>
-""", unsafe_allow_html=True)
+head_l, head_r = st.columns([5, 1], gap="medium")
+with head_l:
+    st.markdown('''<div class="app-title">License Plate Recognition</div><div class="app-subtitle">Detect and read vehicle license plates using computer vision and OCR.</div>''', unsafe_allow_html=True)
+with head_r:
+    st.markdown('''<div class="ai-badge"><div class="ai-line"><span class="ai-dot"></span>AI Powered</div><div class="ai-sub">YOLO + Tesseract</div></div>''', unsafe_allow_html=True)
 
-# Single-image input only.
-st.markdown('<div class="section-label">Upload vehicle image</div>', unsafe_allow_html=True)
-st.markdown('<div class="upload-card">', unsafe_allow_html=True)
-uploaded = st.file_uploader(
-    "Upload one clear vehicle image",
-    type=["jpg", "jpeg", "png", "webp", "avif"],
-    accept_multiple_files=False,
-    help="Upload a JPG, JPEG, PNG, WEBP or AVIF image. Only one image can be processed at a time.",
-)
-st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('<div class="app-frame">', unsafe_allow_html=True)
+st.markdown('''<div class="steps"><div class="step"><div class="step-num">1</div><div class="step-title">Upload Image</div><div class="step-desc">Select a vehicle image</div></div><div class="step"><div class="step-num">2</div><div class="step-title">Processing</div><div class="step-desc">Detect, clean and read the plate</div></div><div class="step"><div class="step-num">3</div><div class="step-title">Results</div><div class="step-desc">Review the detected plate</div></div></div>''', unsafe_allow_html=True)
 
-if uploaded is None:
-    st.markdown("""
-    <div style="text-align:center;color:#617088;font-size:.78rem;margin-top:18px">
-        Upload an image to automatically detect, clean and read the number plate.
-    </div>
-    """, unsafe_allow_html=True)
-else:
+col_upload, col_process, col_results = st.columns([1.05, 1.05, 1.05], gap="medium")
+with col_upload:
+    st.markdown('<div class="panel-heading">Upload Image</div><div class="panel-copy" style="color:#718198">Select one vehicle image</div>', unsafe_allow_html=True)
+    uploaded = st.file_uploader("Drop Image Here - or - Click to Upload", type=["jpg","jpeg","png","webp","avif"], accept_multiple_files=False, label_visibility="collapsed", help="Only one image can be uploaded at a time.")
+with col_process:
+    st.markdown('<div class="panel-heading">Run Recognition</div><div class="panel-copy">The model will detect the plate, clean the crop and run OCR.</div>', unsafe_allow_html=True)
+    run = st.button("Recognize Plate", type="primary", use_container_width=True, disabled=uploaded is None)
+with col_results:
+    st.markdown('<div class="panel-heading">Results</div><div class="panel-copy">Processed images and the detected plate number will appear below.</div>', unsafe_allow_html=True)
+
+if "lpr_result" not in st.session_state: st.session_state.lpr_result = None
+if "lpr_source" not in st.session_state: st.session_state.lpr_source = None
+if "lpr_upload_name" not in st.session_state: st.session_state.lpr_upload_name = None
+
+# Reset stale result when the user selects a different image.
+if uploaded is not None and uploaded.name != st.session_state.lpr_upload_name:
+    st.session_state.lpr_result = None
+    st.session_state.lpr_source = read_image_file(uploaded)
+    st.session_state.lpr_upload_name = uploaded.name
+elif uploaded is None:
+    st.session_state.lpr_result = None
+    st.session_state.lpr_source = None
+    st.session_state.lpr_upload_name = None
+
+if uploaded is not None and run:
     image = read_image_file(uploaded)
+    with st.spinner("Running recognition..."):
+        st.session_state.lpr_result = process_group([image])
+        st.session_state.lpr_source = image
+        st.session_state.lpr_upload_name = uploaded.name
 
-    with st.spinner("Detecting plate and running OCR..."):
-        result = process_group([image])
+result = st.session_state.lpr_result
+source_image = st.session_state.lpr_source
+annotated = None
+cleaned = None
+best = None
+if result is not None and source_image is not None:
+    best = max(result["results"], key=lambda r: r["quality"]["combined"])
+    annotated = source_image.copy()
+    x1,y1,x2,y2 = best["bbox"]
+    cv2.rectangle(annotated,(x1,y1),(x2,y2),(0,230,125),4)
+    label = result["text"] or result["fused_text"] or "PLATE DETECTED"
+    confidence_label = f"{label}  {result['score']:.0%}"
+    font=cv2.FONT_HERSHEY_SIMPLEX
+    scale=max(.55,min(1.15,source_image.shape[1]/1200))
+    thickness=max(2,int(scale*2.5))
+    (lw,lh),baseline=cv2.getTextSize(confidence_label,font,scale,thickness)
+    label_y=y1-10
+    if label_y-lh-baseline<0: label_y=y2+lh+baseline+10
+    box_top=label_y-lh-baseline-10; box_bottom=label_y+5; box_right=min(source_image.shape[1]-1,x1+lw+16)
+    cv2.rectangle(annotated,(x1,box_top),(box_right,box_bottom),(0,185,95),-1)
+    cv2.putText(annotated,confidence_label,(x1+8,label_y-4),font,scale,(255,255,255),thickness,cv2.LINE_AA)
+    cleaned=best["rectified"] if best["rectified"] is not None else best["plate"]
 
-    if result is None:
-        st.markdown(
-            '<div class="error-box">⚠️ No license plate was detected. '
-            'Try a closer, brighter or less obstructed vehicle image.</div>',
-            unsafe_allow_html=True
-        )
-        st.markdown('<div class="section-label">Uploaded image</div>', unsafe_allow_html=True)
-        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
+# Preview row, intentionally matching the reference's three equal panels.
+p1,p2,p3=st.columns(3,gap="medium")
+with p1:
+    st.markdown('<div class="image-card-title">Uploaded Image</div>',unsafe_allow_html=True)
+    if source_image is not None: st.image(cv2.cvtColor(source_image,cv2.COLOR_BGR2RGB),use_container_width=True)
+    else: st.markdown('<div class="image-shell"><div class="image-placeholder">No image uploaded</div></div>',unsafe_allow_html=True)
+with p2:
+    st.markdown('<div class="image-card-title">Detected Plate (Cleaned)</div>',unsafe_allow_html=True)
+    if cleaned is not None:
+        disp=cv2.cvtColor(cleaned,cv2.COLOR_GRAY2RGB) if cleaned.ndim==2 else cv2.cvtColor(cleaned,cv2.COLOR_BGR2RGB)
+        st.image(disp,use_container_width=True)
+    else: st.markdown('<div class="image-shell"><div class="image-placeholder">Plate crop will appear here</div></div>',unsafe_allow_html=True)
+with p3:
+    st.markdown('<div class="image-card-title">Annotated Image</div>',unsafe_allow_html=True)
+    if annotated is not None: st.image(cv2.cvtColor(annotated,cv2.COLOR_BGR2RGB),use_container_width=True)
+    else: st.markdown('<div class="image-shell"><div class="image-placeholder">Annotated result will appear here</div></div>',unsafe_allow_html=True)
+
+if result is None:
+    st.markdown('<div class="empty-card"><div class="empty-icon">!</div><div><div class="empty-title">Waiting for an image</div><div class="empty-text">Upload a vehicle image and click Recognize Plate.</div></div></div>',unsafe_allow_html=True)
+else:
+    if best is None:
+        st.markdown('<div class="error-card">No license plate was detected. Try a clearer or closer vehicle image.</div>',unsafe_allow_html=True)
     else:
-        best = max(result["results"], key=lambda r: r["quality"]["combined"])
-        annotated = image.copy()
-        x1, y1, x2, y2 = best["bbox"]
+        display_text=result["text"] or result["fused_text"] or "UNREADABLE"
+        score_pct=float(result["score"])*100
+        confidence_word="Very High" if score_pct>=85 else "High" if score_pct>=70 else "Moderate" if score_pct>=50 else "Low"
+        st.markdown(f'''<div class="result-card"><div class="result-top"><div class="result-icon success">✓</div><div><div class="result-title">Recognition Result</div><div class="result-note">Plate number and confidence scores</div></div><div class="result-pill">{confidence_word} confidence</div></div><div class="plate-label">Detected plate number</div><div class="plate-text">{display_text}</div><div class="plate-small">OCR reading · Indian vehicle plate</div><div class="progress"><div style="width:{max(0,min(100,score_pct)):.1f}%"></div></div><div class="metrics"><div class="metric"><div class="metric-label">Accuracy</div><div class="metric-value green">{score_pct:.1f}%</div><div class="metric-note">combined score</div></div><div class="metric"><div class="metric-label">Detection</div><div class="metric-value">{best["det_conf"]:.1%}</div><div class="metric-note">plate localization</div></div><div class="metric"><div class="metric-label">OCR Confidence</div><div class="metric-value">{best["ocr_conf"]:.1%}</div><div class="metric-note">text recognition</div></div><div class="metric"><div class="metric-label">Image Quality</div><div class="metric-value">{best["quality"]["combined"]:.1%}</div><div class="metric-note">blur / exposure / noise</div></div></div><div class="details"><div><div class="detail-label">Confidence strength</div><div class="detail-value">{confidence_word}</div></div><div><div class="detail-label">OCR agreement</div><div class="detail-value">{result["agreement"]:.1%}</div></div><div><div class="detail-label">Detection engine</div><div class="detail-value">{best["backend"].upper()}</div></div></div></div>''',unsafe_allow_html=True)
+        if not result["text"]: st.markdown('<div class="error-card">⚠️ A plate was detected, but the OCR reading did not pass the reliability threshold. The displayed text may contain uncertain characters.</div>',unsafe_allow_html=True)
 
-        # More polished annotation: bounding box + readable label.
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 230, 125), 4)
-        label = result["text"] or "PLATE DETECTED"
-        confidence_label = f"{label}  {result['score']:.0%}"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = max(0.55, min(1.15, image.shape[1] / 1200))
-        thickness = max(2, int(scale * 2.5))
-        (lw, lh), baseline = cv2.getTextSize(confidence_label, font, scale, thickness)
-        label_y = y1 - 10
-        if label_y - lh - baseline < 0:
-            label_y = y2 + lh + baseline + 10
-        box_top = label_y - lh - baseline - 10
-        box_bottom = label_y + 5
-        box_right = min(image.shape[1] - 1, x1 + lw + 16)
-        cv2.rectangle(annotated, (x1, box_top), (box_right, box_bottom), (0, 185, 95), -1)
-        cv2.putText(
-            annotated, confidence_label, (x1 + 8, label_y - 4),
-            font, scale, (255, 255, 255), thickness, cv2.LINE_AA
-        )
-
-        # Top image section: exactly the three views requested.
-        st.markdown('<div class="section-label">Recognition preview</div>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3, gap="medium")
-
-        with c1:
-            st.markdown('<div class="image-card"><div class="image-title">01 · Uploaded image</div>', unsafe_allow_html=True)
-            st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with c2:
-            cleaned = best["rectified"] if best["rectified"] is not None else best["plate"]
-            disp = (
-                cv2.cvtColor(cleaned, cv2.COLOR_GRAY2RGB)
-                if cleaned.ndim == 2
-                else cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB)
-            )
-            st.markdown('<div class="image-card"><div class="image-title">02 · Detected plate · cleaned</div>', unsafe_allow_html=True)
-            st.image(disp, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with c3:
-            st.markdown('<div class="image-card"><div class="image-title">03 · Annotated result</div>', unsafe_allow_html=True)
-            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # Main result card.
-        display_text = result["text"] or result["fused_text"] or "UNREADABLE"
-        score_pct = result["score"] * 100
-        confidence_word = (
-            "Very High" if score_pct >= 85 else
-            "High" if score_pct >= 70 else
-            "Moderate" if score_pct >= 50 else
-            "Low"
-        )
-
-        st.markdown(f"""
-        <div class="result-shell">
-          <div class="result-head">
-            <div class="result-title"><span class="check">✓</span> Recognition Result</div>
-            <div class="result-state">{confidence_word} confidence</div>
-          </div>
-
-          <div class="plate-wrap">
-            <div class="eyebrow">Detected plate number</div>
-            <div class="plate-number">{display_text}</div>
-            <div class="plate-sub">OCR reading • Indian vehicle plate format</div>
-            <div class="confidence-track">
-              <div class="confidence-fill" style="width:{score_pct:.1f}%"></div>
-            </div>
-          </div>
-
-          <div class="metric-grid">
-            <div class="metric">
-              <div class="metric-label">Overall Accuracy</div>
-              <div class="metric-value good">{score_pct:.1f}%</div>
-              <div class="metric-note">combined score</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">Detection</div>
-              <div class="metric-value">{best["det_conf"]:.1%}</div>
-              <div class="metric-note">plate localization</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">OCR Confidence</div>
-              <div class="metric-value">{best["ocr_conf"]:.1%}</div>
-              <div class="metric-note">text recognition</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">Image Quality</div>
-              <div class="metric-value">{best["quality"]["combined"]:.1%}</div>
-              <div class="metric-note">blur / exposure / noise</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">Agreement</div>
-              <div class="metric-value">{result["agreement"]:.1%}</div>
-              <div class="metric-note">OCR consistency</div>
-            </div>
-          </div>
-
-          <div class="detail-grid">
-            <div class="detail">
-              <div class="detail-name">Confidence strength</div>
-              <div class="detail-value">{confidence_word}</div>
-            </div>
-            <div class="detail">
-              <div class="detail-name">Detection engine</div>
-              <div class="detail-value">{best["backend"].upper()}</div>
-            </div>
-            <div class="detail">
-              <div class="detail-name">Plate geometry</div>
-              <div class="detail-value">{best["quality"]["perspective"]:.1%} quality</div>
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if not result["text"]:
-            st.markdown(
-                '<div class="warning-box">⚠️ A plate was detected, but the OCR reading '
-                'did not pass the reliability threshold. The displayed text may contain uncertain characters.</div>',
-                unsafe_allow_html=True
-            )
-
-        st.markdown(
-            '<div class="footer-note">Detection → perspective correction → image enhancement → OCR → confidence fusion</div>',
-            unsafe_allow_html=True
-        )
+st.markdown('</div>',unsafe_allow_html=True)
+st.markdown('''<div class="footer"><div><strong>License Plate Recognition</strong><br>Built with YOLO, OpenCV and Tesseract OCR</div><div><strong>Computer Vision Pipeline</strong></div></div>''',unsafe_allow_html=True)
