@@ -1,11 +1,13 @@
 import os
 import json
+import base64
 import tempfile
 
 import cv2
 import numpy as np
 import pytesseract
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 try:
@@ -616,6 +618,14 @@ def read_image_file(uploaded_file):
     return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
 
+def _b64_thumb(image, height=96):
+    h, w = image.shape[:2]
+    scale = height / float(h)
+    small = cv2.resize(image, (max(1, int(w * scale)), height))
+    ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return base64.b64encode(buf).decode("ascii") if ok else ""
+
+
 def read_video_frames(uploaded_file, max_frames=8):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(uploaded_file.getvalue())
@@ -643,24 +653,53 @@ def read_video_frames(uploaded_file, max_frames=8):
 # streamlit UI
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="License Plate Recognition", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="License Plate Recognition", page_icon="🚘", layout="wide")
 st.markdown("""
 <style>
-.stApp{background:#080d16;color:#e8edf5}.block-container{max-width:1240px;padding-top:2rem}
-.title{font-size:2.1rem;font-weight:700}.subtitle{color:#8e9bb0;margin-bottom:1.2rem}
-.result-box{border:1px solid #26364d;border-radius:12px;background:#0d1624;padding:20px;text-align:center}
-.plate{color:#35e58d;font:700 2.2rem 'Courier New',monospace;letter-spacing:3px}
-.metric{border:1px solid #26364d;border-radius:10px;background:#0a111c;padding:15px}
-.metric-label{color:#8190a7;font-size:.78rem}.metric-value{font-size:1.35rem;font-weight:700;margin-top:4px}
+.stApp{background:#080d16;color:#e8edf5}
+.block-container{max-width:1080px;padding-top:2.2rem;padding-bottom:3rem}
+.hero{display:flex;align-items:center;gap:14px;margin-bottom:.3rem}
+.hero-badge{font-size:1.8rem;line-height:1}
+.title{font-size:1.9rem;font-weight:700;letter-spacing:-.02em}
+.subtitle{color:#8e9bb0;margin-bottom:1.6rem;font-size:.95rem;line-height:1.5;max-width:640px}
+.section-label{color:#8190a7;font-size:.78rem;letter-spacing:1.5px;text-transform:uppercase;
+               margin:1.6rem 0 .6rem;font-weight:600}
+div[data-testid="stRadio"] > div{gap:.4rem}
+div[data-testid="stRadio"] label{border:1px solid #26364d;border-radius:9px;padding:.45rem .9rem;
+                                   background:#0d1624;transition:border-color .15s ease}
+div[data-testid="stRadio"] label:hover{border-color:#3d5a86}
+div[data-testid="stFileUploader"]{border:1px dashed #2b3d59;border-radius:12px;padding:.4rem;
+                                    background:#0a111c}
+.frame-strip{display:flex;gap:8px;overflow-x:auto;padding:.4rem 0 .8rem}
+.frame-strip img{border-radius:8px;border:1px solid #26364d;height:64px;width:auto;flex-shrink:0}
+.result-box{border:1px solid #26364d;border-radius:14px;background:linear-gradient(180deg,#0d1624,#0a1420);
+            padding:26px 20px;text-align:center;margin-top:.4rem}
+.result-label{color:#8090a8;font-size:.75rem;letter-spacing:2px;text-transform:uppercase}
+.plate{color:#35e58d;font:700 clamp(1.6rem,6vw,2.4rem) 'Courier New',monospace;letter-spacing:.2em;
+       margin-top:6px;word-break:break-all}
+.copy-btn{margin-top:14px;background:#152036;color:#c7d3e6;border:1px solid #2b3d59;border-radius:8px;
+          padding:.4rem 1rem;font-size:.82rem;cursor:pointer;transition:background .15s ease}
+.copy-btn:hover{background:#1c2c4a}
+.copy-btn.copied{background:#123a2c;border-color:#1f6b4c;color:#6fe3ac}
+.metric-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:1rem}
+@media (max-width:640px){.metric-row{grid-template-columns:repeat(2,1fr)}}
+.metric{border:1px solid #26364d;border-radius:10px;background:#0a111c;padding:14px}
+.metric-icon{font-size:1rem;margin-bottom:2px}
+.metric-label{color:#8190a7;font-size:.75rem}.metric-value{font-size:1.3rem;font-weight:700;margin-top:2px}
+hr.divider{border:none;border-top:1px solid #1c2740;margin:1.8rem 0}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="title">License Plate Recognition</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Works on any vehicle. Upload one photo, several photos of the same '
-            'vehicle, or a short video, for a much better reading on blur or motion.</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="hero"><div class="hero-badge">🚘</div><div class="title">License Plate Recognition</div></div>'
+    '<div class="subtitle">Works on any vehicle. Upload one photo, several photos of the same '
+    'vehicle, or a short video, for a much better reading on blur or motion.</div>',
+    unsafe_allow_html=True,
+)
 
-mode = st.radio("Input", ["Single photo", "Multiple photos of the same vehicle", "Video"], horizontal=True)
+st.markdown('<div class="section-label">Input</div>', unsafe_allow_html=True)
+mode = st.radio("Input", ["Single photo", "Multiple photos of the same vehicle", "Video"],
+                 horizontal=True, label_visibility="collapsed")
 
 images = []
 if mode == "Single photo":
@@ -681,7 +720,16 @@ else:
 if not images:
     st.info("Upload to start.")
 else:
+    if len(images) > 1:
+        st.markdown('<div class="section-label">{} frame(s) loaded</div>'.format(len(images)),
+                    unsafe_allow_html=True)
+        thumbs = "".join(
+            f'<img src="data:image/jpeg;base64,{_b64_thumb(im)}"/>' for im in images[:24]
+        )
+        st.markdown(f'<div class="frame-strip">{thumbs}</div>', unsafe_allow_html=True)
+
     run = st.button("Recognize Plate", type="primary", use_container_width=True)
+    st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
     if run:
         with st.spinner(f"Detecting and reading {len(images)} frame(s)..."):
             result = process_group(images)
@@ -713,23 +761,60 @@ else:
                 st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), caption="Annotated", use_container_width=True)
 
             if result["text"]:
-                st.markdown(
-                    f'<div class="result-box"><div style="color:#8090a8;font-size:.75rem;letter-spacing:1px">'
-                    f'DETECTED PLATE NUMBER</div><div class="plate">{result["text"]}</div></div>',
-                    unsafe_allow_html=True,
+                plate_json = json.dumps(result["text"])
+                components.html(f"""
+                    <html><head><style>
+                    html,body{{margin:0;background:#080d16;font-family:-apple-system,Segoe UI,sans-serif}}
+                    .card{{border:1px solid #26364d;border-radius:14px;
+                           background:linear-gradient(180deg,#0d1624,#0a1420);
+                           padding:22px 20px;text-align:center;box-sizing:border-box}}
+                    </style></head><body>
+                    <div class="card">
+                    <div style="color:#8090a8;font-size:.75rem;letter-spacing:2px;text-transform:uppercase">
+                        Detected plate number</div>
+                    <div style="color:#35e58d;font:700 clamp(1.6rem,6vw,2.4rem) 'Courier New',monospace;
+                                letter-spacing:.2em;margin-top:6px;word-break:break-all">{result["text"]}</div>
+                    <button id="copy-btn" style="margin-top:14px;background:#152036;color:#c7d3e6;
+                            border:1px solid #2b3d59;border-radius:8px;padding:.4rem 1rem;font-size:.82rem;
+                            cursor:pointer">Copy</button>
+                    </div>
+                    <script>
+                    const btn = document.getElementById("copy-btn");
+                    btn.addEventListener("click", () => {{
+                        navigator.clipboard.writeText({plate_json}).then(() => {{
+                            btn.textContent = "Copied";
+                            btn.style.background = "#123a2c";
+                            btn.style.borderColor = "#1f6b4c";
+                            btn.style.color = "#6fe3ac";
+                            setTimeout(() => {{
+                                btn.textContent = "Copy";
+                                btn.style.background = "#152036";
+                                btn.style.borderColor = "#2b3d59";
+                                btn.style.color = "#c7d3e6";
+                            }}, 1500);
+                        }});
+                    }});
+                    </script>
+                    </body></html>
+                """, height=160)
+
+                metrics = [
+                    ("🎯", "Overall Confidence", result["score"]),
+                    ("🔍", "Detection Confidence", best["det_conf"]),
+                    ("🎞️", "Frames Used", len(result["results"])),
+                    ("🖼️", "Image Quality", best["quality"]["combined"]),
+                ]
+                tiles = "".join(
+                    f'<div class="metric"><div class="metric-icon">{icon}</div>'
+                    f'<div class="metric-label">{label}</div>'
+                    f'<div class="metric-value">{value:.1%}</div></div>'
+                    if isinstance(value, float) else
+                    f'<div class="metric"><div class="metric-icon">{icon}</div>'
+                    f'<div class="metric-label">{label}</div>'
+                    f'<div class="metric-value">{value}</div></div>'
+                    for icon, label, value in metrics
                 )
-                st.write("")
-                m1, m2, m3, m4 = st.columns(4)
-                for col, label, value in [
-                    (m1, "Overall Confidence", result["score"]),
-                    (m2, "Detection Confidence", best["det_conf"]),
-                    (m3, "Frames Used", len(result["results"])),
-                    (m4, "Image Quality", best["quality"]["combined"]),
-                ]:
-                    with col:
-                        text_value = f"{value:.1%}" if isinstance(value, float) else str(value)
-                        st.markdown(f'<div class="metric"><div class="metric-label">{label}</div>'
-                                    f'<div class="metric-value">{text_value}</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="metric-row">{tiles}</div>', unsafe_allow_html=True)
             else:
                 st.warning("A plate was detected, but the reading was not reliable enough to report. "
                            "Try a clearer or closer photo, or add a couple more photos of the same vehicle.")
