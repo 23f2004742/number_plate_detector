@@ -1,65 +1,68 @@
+---
+title: Indian License Plate Recognition
+emoji: 🚘
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: "1.48.0"
+app_file: app.py
+pinned: false
+---
+
 Indian License Plate Recognition
 
-A robust vehicle license plate recognition pipeline designed to work with both clear and difficult vehicle images. The system uses a trained YOLO detector to locate the plate, OpenCV for crop correction and image enhancement, and RapidOCR with Tesseract as an independent OCR fallback.
+A forensic-style vehicle license plate recovery pipeline, built around the same detection, restoration and OCR fusion approach validated in the training notebook, not just a single OCR call. It accepts a single photo, several photos of the same vehicle, or a short video, and combines everything it reads into one answer, marking any character it is not confident about instead of guessing.
 
 Features
 
-YOLO-based license plate detection
+Trained YOLO plate detector with a fallback chain, retried at a lower confidence and larger input size, then a Haar cascade, then a contour-based guess, so a hard photo still returns a crop instead of nothing
 
-Perspective correction and safe crop padding
+Multiple photos or video frames of the same vehicle can be combined, since a single blurry frame is often not enough on its own
 
-Multiple faithful image preprocessing paths
+Quality-adaptive restoration, denoise, sharpen or exposure normalization is only applied when that specific defect is actually detected, plus perspective correction for angled plates
 
-RapidOCR with PP-OCRv6 and ONNX Runtime
+Two-line plate support for motorcycles and autos with a stacked plate layout
 
-Tesseract fallback OCR
+Tesseract and RapidOCR run over several image views, and all of their readings are fused character by character using sequence alignment, so agreement across readings counts for more than any single OCR pass
 
-Position-aware Indian registration format validation
+Common confusable characters, O and 0, I and 1, B and 8, S and 5, Z and 2, G and 6, are reconciled at the position level, and corrected against the Indian plate template when the position's expected type, letter or digit, is already known
 
-Independent recognition of plate groups (AA | 00 | AA | 0000)
+Any vehicle's plate is read, not only the standard ten character Indian format, the standard format only earns a small confidence bonus, it is never required
 
-Candidate consensus without hard-coding individual plate numbers
-
-Designed for clear, low-resolution and blurred plates
-
-Streamlit web interface
+Uploads in jpg, png, webp and avif all decode correctly
 
 Pipeline
 
-Upload a vehicle image.
+Upload a photo, a batch of photos, or a video of the vehicle.
 
-YOLO detects the highest-confidence license plate.
+Each frame goes through the detector fallback chain to find the plate.
 
-The plate crop is preserved and also perspective-corrected.
+The crop is checked for blur, exposure, noise, resolution and skew, then restored based on whichever of those is actually poor, and perspective corrected.
 
-OCR receives several faithful image variants, including grayscale, CLAHE, denoised, sharpened and illumination-normalized views.
+Tesseract and RapidOCR each read several views of the crop, plus the top and bottom halves separately when the plate looks like a two-line layout.
 
-RapidOCR and Tesseract generate independent readings.
+All of those readings are fused character by character, then, if more than one photo or frame was given, the per-photo results are fused again the same way.
 
-The difficult AA00AA0000 plate structure is also evaluated group-by-group.
-
-Candidates are ranked using OCR confidence, repeated agreement and valid Indian state-code/plate structure.
-
-The detected plate, cleaned crop, annotated vehicle image and confidence metrics are displayed.
+The final confidence score combines OCR confidence, agreement across readings, character stability, image quality and geometric consistency. Below the confidence threshold the plate is reported as unreadable rather than guessed, and low-confidence characters are shown as a question mark rather than a false digit or letter.
 
 Required files
 
 app.py
 requirements.txt
-apt.txt
+packages.txt
 README.md
 plate_detector.pt
 pipeline_config.json
 
 Notes
 
-The OCR stage deliberately keeps the original grayscale information. Strong thresholding and aggressive sharpening can remove character strokes from blurred plates, so they are not used as the sole recognition path.
+pipeline_config.json holds the same weights and thresholds produced by the training notebook, so the deployed app scores plates the same way the notebook evaluated them.
 
-The system does not hard-code known plate numbers or blindly replace ambiguous characters such as Q/O or B/U. Structured validation is used to rank genuine OCR evidence instead of inventing missing characters.
+The system does not hard-code known plate numbers or blindly replace ambiguous characters. Confusable characters are only reconciled where the evidence and the plate template already support it.
 
 Run locally
 
 pip install -r requirements.txt
 streamlit run app.py
 
-Tesseract must also be installed on the operating system. On Hugging Face Spaces it is installed through apt.txt.
+Tesseract also needs to be installed on the operating system. On Hugging Face Spaces it is installed through packages.txt.
