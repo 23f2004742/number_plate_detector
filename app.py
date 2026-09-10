@@ -57,6 +57,73 @@ LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 DIGITS = "0123456789"
 
 
+# Common OCR confusions for the two-letter Indian state prefix.
+# These are used only to rank a *valid* state code; they never alter
+# the district/series/registration number.
+STATE_PREFIX_CONFUSIONS = {
+    "M": {"H": 0.72, "N": 0.82, "W": 0.88},
+    "H": {"M": 0.72, "N": 0.82, "R": 0.86, "P": 0.88},
+    "A": {"R": 0.80, "4": 0.75},
+    "C": {"G": 0.78, "O": 0.82},
+    "G": {"C": 0.78, "O": 0.82, "Q": 0.84},
+    "P": {"R": 0.86, "B": 0.88},
+    "T": {"I": 0.82, "Y": 0.86},
+    "U": {"V": 0.82, "O": 0.86},
+    "D": {"O": 0.82, "B": 0.88},
+    "R": {"P": 0.86, "K": 0.88},
+}
+
+
+def state_prefix_candidates(prefix):
+    """Return plausible valid Indian state codes for a noisy OCR prefix."""
+    prefix = normalize_text(prefix)[:2]
+    if len(prefix) != 2:
+        return []
+    if prefix in INDIAN_STATE_CODES:
+        return [(prefix, 1.0)]
+
+    ranked = []
+    for code in INDIAN_STATE_CODES:
+        score = 1.0
+        for a, b in zip(prefix, code):
+            if a == b:
+                continue
+            # OCR confusion gets a smaller penalty than an arbitrary change.
+            confusion = STATE_PREFIX_CONFUSIONS.get(a, {}).get(b)
+            if confusion is None:
+                confusion = STATE_PREFIX_CONFUSIONS.get(b, {}).get(a)
+            score *= confusion if confusion is not None else 0.18
+        ranked.append((code, score))
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return ranked[:6]
+
+
+def repair_state_prefix(text, source_prefix=None):
+    """
+    Repair only an invalid two-letter state prefix when a valid Indian
+    state code is strongly supported by OCR. Everything after the prefix
+    is kept unchanged.
+    """
+    text = normalize_text(text)
+    if len(text) != 10 or text[:2] in INDIAN_STATE_CODES:
+        return text, 0.0
+
+    prefix = normalize_text(source_prefix or text[:2])[:2]
+    candidates = state_prefix_candidates(prefix)
+    if not candidates:
+        return text, 0.0
+
+    best_code, score = candidates[0]
+    second = candidates[1][1] if len(candidates) > 1 else 0.0
+
+    # Only repair when the best valid state code is clearly stronger.
+    # This avoids inventing state codes for arbitrary OCR garbage.
+    if score < 0.48 or score < second * 1.20:
+        return text, 0.0
+
+    return best_code + text[2:], score
+
+
 @st.cache_resource(show_spinner=False)
 def get_detector():
     if not os.path.exists(MODEL_PATH):
@@ -410,22 +477,48 @@ def run_ocr(plate, rectified):
         g = grouped.setdefault(t, {"items": [], "count": 0})
         g["items"].append(r); g["count"] += 1
 
+    # Add state-prefix-repaired candidates as separate candidates.
+    # This is constrained to the official state-code set and never changes
+    # positions 2..9. For example HH02ER9194 can become MH02ER9194 only
+    # when MH is strongly favored among valid state codes.
+    repaired = []
+    for text, g in list(grouped.items()):
+        if len(text) != 10 or text[:2] in INDIAN_STATE_CODES:
+            continue
+        repaired_text, repair_score = repair_state_prefix(text)
+        if repaired_text != text and repair_score > 0:
+            item = max(g["items"], key=lambda x: x["confidence"]).copy()
+            item["text"] = repaired_text
+            item["confidence"] = min(99.0, item["confidence"] + repair_score * 8.0)
+            item["source"] = item.get("source", "") + "-state-repaired"
+            item["state_repaired"] = True
+            repaired.append(item)
+
+    for item in repaired:
+        t = normalize_text(item["text"])
+        g = grouped.setdefault(t, {"items": [], "count": 0})
+        g["items"].append(item)
+        g["count"] += 1
+
     best = None
     best_s = -1
     for text, g in grouped.items():
         mean_conf = float(np.mean([clamp(x["confidence"] / 100) for x in g["items"]]))
         s = candidate_score(text, mean_conf, g["count"])
-        # Valid state code is mandatory for a complete normal plate.
+        # A valid state code is a strong structural constraint.
         if len(text) == 10 and text[:2] in INDIAN_STATE_CODES:
             s += 0.14
         if len(text) == 10 and text[:2] not in INDIAN_STATE_CODES:
             s -= 0.18
         if any(x.get("structured") for x in g["items"]):
             s += 0.08
+        if any(x.get("state_repaired") for x in g["items"]):
+            # State repair is weaker than a direct valid OCR reading.
+            s -= 0.015
         if s > best_s:
             best_s = s
             best = {**max(g["items"], key=lambda x: x["confidence"]), "text": text, "agreement": min(g["count"] / 4.0, 1.0), "combined_score": clamp(s)}
-    return all_results, best
+    return all_results + repaired, best
 
 
 def detect_plate(image):
