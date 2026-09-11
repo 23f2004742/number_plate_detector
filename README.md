@@ -62,7 +62,72 @@ The system does not hard-code known plate numbers or blindly replace ambiguous c
 
 Run locally
 
-pip install -r requirements.txt
-streamlit run app.py
+The instructions below assume Windows PowerShell. The same project also runs on macOS and Linux with equivalent Python, Git and Tesseract commands.
 
-Tesseract also needs to be installed on the operating system. On Hugging Face Spaces it is installed through packages.txt.
+Prerequisites
+
+- Git, available from https://git-scm.com/downloads
+- Python 3.12 (64-bit), available from https://www.python.org/downloads/
+- Tesseract OCR. On Windows, install it from https://github.com/UB-Mannheim/tesseract/wiki and add its installation directory to PATH. The default directory is usually `C:\Program Files\Tesseract-OCR`.
+
+1. Clone the repository
+
+On the repository page, select **Code**, copy the HTTPS URL, and run the following commands. Replace the URL with the repository's actual HTTPS URL if necessary.
+
+```powershell
+cd C:\src
+git clone <REPOSITORY-HTTPS-URL> number-plate-detector
+cd number-plate-detector
+```
+
+Keep the project path short on Windows. This helps avoid Windows path-length errors while PyTorch is installed.
+
+2. Create and activate a virtual environment
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+If PowerShell blocks activation, run this once in PowerShell as the current user, then activate the environment again:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+3. Install the Python dependencies
+
+Run this as a separate command from the Streamlit command:
+
+```powershell
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+The installation can take several minutes because it includes PyTorch and computer-vision packages. If Windows reports `WinError 206` or `filename or extension is too long`, move or reclone the project to a shorter directory such as `C:\src\number-plate-detector`, then recreate `.venv` and repeat this step.
+
+4. Check Tesseract
+
+Close and reopen PowerShell after adding Tesseract to PATH, then run:
+
+```powershell
+tesseract --version
+```
+
+If the command is not recognized, add `C:\Program Files\Tesseract-OCR` to the Windows PATH and reopen PowerShell. The application can use RapidOCR as a fallback, but Tesseract is part of the intended OCR pipeline.
+
+5. Start the application
+
+```powershell
+python -m streamlit run app.py
+```
+
+Open the URL printed in the terminal, normally http://localhost:8501. Keep the terminal open while using the application. Stop the server with `Ctrl+C`.
+
+Do not combine the install and start commands. For example, `pip install -r requirements.txt streamlit run app.py` makes pip try to install `streamlit` and `app.py` as packages.
+
+6. Use the application
+
+Upload a JPG, PNG, WEBP or AVIF image, multiple images of the same vehicle, or a short video. The detector, restoration pipeline and OCR fusion will process the upload and report the recognized plate with confidence information.
+
+Tesseract also needs to be installed on the operating system. On Hugging Face Spaces it is installed through `packages.txt`.
